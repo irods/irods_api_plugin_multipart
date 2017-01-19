@@ -1,0 +1,11 @@
+{
+    "type": "record",
+    "name": "multipart_request",
+    "fields" : [
+        {"name": "operation", "type": "string"},
+        {"name": "physical_path", "type": "string"},
+        {"name": "logical_path", "type": "string"},
+        {"name": "destination_resource", "type": "string"},
+        {"name": "number_of_parts", "type": "int"}
+    ]
+}
