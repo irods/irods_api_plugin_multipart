@@ -1,11 +1,41 @@
 {
-    "type": "record",
     "name": "multipart_request",
+    "type": "record",
     "fields" : [
         {"name": "operation", "type": "string"},
-        {"name": "physical_path", "type": "string"},
-        {"name": "logical_path", "type": "string"},
+        {"name": "source_physical_path", "type": "string"},
+        {"name": "destination_collection", "type": "string"},
         {"name": "destination_resource", "type": "string"},
-        {"name": "number_of_parts", "type": "int"}
+        {"name": "requested_number_of_parts", "type": "int"},
+        {"name": "transport_mechanisims", "type": { "type": "array", "items": "string"} },
+        {
+            "name": "access_control_list",
+            "type": {
+                "type": "array",
+                "items": {
+                    "name": "access_control_entry",
+                    "type": "record",
+                    "fields": [
+                        {"name": "user_or_group", "type": "string"},
+                        {"name": "operation", "type": "string"}
+                    ]
+                }
+            }
+        },
+        {
+            "name": "metadata",
+            "type": {
+                "type": "array",
+                "items": {
+                    "name": "metadata_entry",
+                    "type": "record",
+                    "fields": [
+                        {"name": "attrihute", "type": "string"},
+                        {"name": "value", "type": "string"},
+                        {"name": "unit", "type": "string"}
+                    ]
+                }
+            }
+        }
     ]
 }

@@ -35,7 +35,7 @@ link_libraries(c++abi)
 include_directories(${IRODS_EXTERNALS_FULLPATH_CLANG}/include/c++/v1)
 set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-z,defs")
 
-include(api_plugin.cmake)
+include(api_plugin_multipart.cmake)
 
 set(CPACK_PACKAGE_FILE_NAME "irods-api-plugin-multipart${IRODS_PACKAGE_FILE_NAME_SUFFIX}")
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)

@@ -41,27 +41,10 @@ set(
   api_plugin_multipart_client
   )
 
-file(MAKE_DIRECTORY "include")
 
-add_custom_command(
-    OUTPUT ${CMAKE_BINARY_DIR}/include/irods_multipart_request.hpp
-    COMMAND ${IRODS_EXTERNALS_FULLPATH_AVRO}/bin/avrogencpp -n irods -o ${CMAKE_BINARY_DIR}/include/irods_multipart_request.hpp -i ${CMAKE_SOURCE_DIR}/avro_schemas/irods_multipart_request.json
-    MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/avro_schemas/irods_multipart_request.json
-)
+include(irods_multipart_response.cmake)
 
-set_source_files_properties(
-   ${CMAKE_SOURCE_DIR}/src/libapi_plugin_multipart.cpp
-   PROPERTIES
-   OBJECT_DEPENDS ${CMAKE_BINARY_DIR}/include/irods_multipart_request.hpp
-)
-
-install(
-     FILES
-     ${CMAKE_BINARY_DIR}/include/irods_multipart_request.hpp
-     DESTINATION usr/include/irods
-    )
-
-
+include(irods_multipart_request.cmake)
 
 foreach(PLUGIN ${IRODS_API_PLUGINS})
   add_library(
@@ -108,3 +91,9 @@ foreach(PLUGIN ${IRODS_API_PLUGINS})
     DESTINATION usr/lib/irods/plugins/api_v5
     )
 endforeach()
+
+
+
+
+
+

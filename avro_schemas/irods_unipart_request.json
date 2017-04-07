@@ -1,0 +1,15 @@
+{
+    "name": "unipart_request",
+    "type": "record",
+    "fields" : [
+        {"name": "operation", "type": "string"},
+        {"name": "source_physical_path", "type": "string"},
+        {"name": "source_file_size", "type": "long"},
+        {"name": "destination_logical_path", "type": "string"},
+        {"name": "read_write_offset", "type": "long"},
+        {"name": "previously_negotiated", "type": "boolean" }, 
+        {"name": "destination_resource_or_hierarchy", "type": "string"},
+        {"name": "port", "type": "int"},
+        {"name": "host_name", "type": "string"}
+    ]
+}

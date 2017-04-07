@@ -1,0 +1,24 @@
+{
+    "name": "multipart_response",
+    "type": "record",
+    "fields": [
+        {
+            "name": "parts",
+            "type": {
+                "type": "array",
+                "items": {
+                    "name": "part_request",
+                    "type": "record",
+                    "fields": [
+                        {"name": "port", "type": "int"},
+                        {"name": "host_name", "type": "string"},
+                        {"name": "size", "type": "long"},
+                        {"name": "offset", "type": "long"},
+                        {"name": "destination_logical_path", "type": "string"},
+                        {"name": "resource_hierarchy", "type": "string"}
+                    ]
+                }
+            }
+        }
+    ]
+}
