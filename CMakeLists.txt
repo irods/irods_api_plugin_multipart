@@ -31,11 +31,18 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
 set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -stdlib=libc++")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -stdlib=libc++")
 add_compile_options(-nostdinc++ -Wall -Wextra -Werror -Wno-unused-parameter)
+add_compile_options(-Wno-unused-parameter) # Until fix of irods_re_plugin.hpp
+add_compile_options(-Wno-unneeded-internal-declaration) # Until fix of https://github.com/irods/irods/issues/3396
+
 link_libraries(c++abi)
+link_libraries(pthread)
+link_libraries(dl)
+
 include_directories(${IRODS_EXTERNALS_FULLPATH_CLANG}/include/c++/v1)
 set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-z,defs")
 
 include(api_plugin_multipart.cmake)
+include(api_plugin_unipart.cmake)
 
 set(CPACK_PACKAGE_FILE_NAME "irods-api-plugin-multipart${IRODS_PACKAGE_FILE_NAME_SUFFIX}")
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)

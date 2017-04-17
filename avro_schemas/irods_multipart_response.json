@@ -2,6 +2,9 @@
     "name": "multipart_response",
     "type": "record",
     "fields": [
+        {"name": "source_physical_path", "type": "string"},
+        {"name": "number_of_threads", "type": "int"},
+        {"name": "port_list", "type": { "type": "array", "items": "int"} },
         {
             "name": "parts",
             "type": {
@@ -10,10 +13,10 @@
                     "name": "part_request",
                     "type": "record",
                     "fields": [
-                        {"name": "port", "type": "int"},
                         {"name": "host_name", "type": "string"},
-                        {"name": "size", "type": "long"},
-                        {"name": "offset", "type": "long"},
+                        {"name": "file_size", "type": "long"},
+                        {"name": "restart_offset", "type": "long"},
+                        {"name": "original_offset", "type": "long"},
                         {"name": "destination_logical_path", "type": "string"},
                         {"name": "resource_hierarchy", "type": "string"}
                     ]

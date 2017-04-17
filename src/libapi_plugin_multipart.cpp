@@ -17,6 +17,7 @@
 #include "irods_virtual_path.hpp"
 #include "irods_resource_manager.hpp"
 #include "irods_resource_redirect.hpp"
+#include "irods_hierarchy_parser.hpp"
 
 #include "irods_multipart_request.hpp"
 #include "irods_multipart_response.hpp"
@@ -35,16 +36,24 @@
 
 extern irods::resource_manager resc_mgr;
             
-const irods::message_broker::data_type ACK_DATA = {'A', 'C', 'K'};
-const irods::message_broker::data_type QUIT_DATA = {'q', 'u', 'i', 't'};
+static const irods::message_broker::data_type REQ_MSG = {'R', 'E', 'Q'};
+static const irods::message_broker::data_type ACK_MSG = {'A', 'C', 'K'};
+static const irods::message_broker::data_type QUIT_MSG = {'q', 'u', 'i', 't'};
 
 void print_mp_response(
         const irods::multipart_response& _resp) {
+
+    std::cout << __FUNCTION__ << ":" << __LINE__ << std::endl;
+    std::cout << " number of threads: " << _resp.number_of_threads<< std::endl;
+    for(auto p : _resp.port_list) {
+        std::cout << "port: " << p << std::endl;
+    }
+
     for(auto p : _resp.parts) {
-        std::cout << "port: " << p.port << std::endl;
         std::cout << "host_name: " << p.host_name << std::endl;
-        std::cout << "size: " << p.size << std::endl;
-        std::cout << "offset: " << p.offset << std::endl;
+        std::cout << "file_size: " << p.file_size << std::endl;
+        std::cout << "restart_offset: " << p.restart_offset << std::endl;
+        std::cout << "original_offset: " << p.original_offset << std::endl;
         std::cout << "destination_logical_path: " << p.destination_logical_path << std::endl;
         std::cout << "resource_hierarchy: " << p.resource_hierarchy << std::endl;
     }
@@ -56,10 +65,13 @@ void multipart_executor_client(
     namespace bfs = boost::filesystem;
     typedef irods::message_broker::data_type data_t;
 
-    zmq::socket_t cmd_skt(*_endpoint->ctrl_ctx(), ZMQ_REP);
-    cmd_skt.connect("inproc://client_comms");
+    zmq::socket_t client_cmd_skt(*_endpoint->ctrl_ctx(), ZMQ_REP);
+    client_cmd_skt.connect("inproc://client_comms");
 
     try {
+        rcComm_t* comm = nullptr;
+        _endpoint->comm<rcComm_t*>(comm);
+
         // =-=-=-=-=-=-=-
         //TODO: parameterize
         irods::message_broker bro("ZMQ_REQ");
@@ -80,7 +92,7 @@ void multipart_executor_client(
         bfs::path p(mp_req.source_physical_path);
 
         if(!bfs::exists(p)) {
-            bro.send(QUIT_DATA);
+            bro.send(QUIT_MSG);
             data_t rcv_msg;
             bro.receive(rcv_msg);
             _endpoint->done(true);
@@ -108,28 +120,33 @@ void multipart_executor_client(
         dec->init( *in );
         irods::multipart_response mp_resp;
         avro::decode( *dec, mp_resp );
-print_mp_response(mp_resp);
 
+        zmq::context_t xport_zmq_ctx(1);
+        irods::api_endpoint* xport_ep_ptr = nullptr;
 
+        irods::message_broker xport_cmd_skt("ZMQ_REQ", &xport_zmq_ctx);
+        xport_cmd_skt.bind("inproc://client_comms");
 
+        irods::api_v5_to_v5_call_client<irods::multipart_response>(
+            comm,
+            mp_req.operation,
+            xport_ep_ptr,
+            &xport_zmq_ctx,
+            mp_resp); 
 
+        // send a request to the client side transport
+        xport_cmd_skt.send(REQ_MSG);
 
+        // wait for a status response
+        data_t cmd_rcv_msg;
+        xport_cmd_skt.receive(cmd_rcv_msg);
 
-
-
-
-// =================================
-
-
-
-
-
-
-
+        std::string cmd_rcv_msg_str;
+        cmd_rcv_msg_str.assign(cmd_rcv_msg.begin(), cmd_rcv_msg.end());
 
         while(true) {
             zmq::message_t rcv_msg;
-            bool ret = cmd_skt.recv( &rcv_msg, ZMQ_DONTWAIT);
+            bool ret = client_cmd_skt.recv( &rcv_msg, ZMQ_DONTWAIT);
             if( ret || rcv_msg.size() > 0) {
  
                 std::string in_str;
@@ -153,17 +170,19 @@ print_mp_response(mp_resp);
                     #endif
                     zmq::message_t snd_msg(3);
                     memcpy(snd_msg.data(), "ACK", 3);
-                    cmd_skt.send(snd_msg);
+                    client_cmd_skt.send(snd_msg);
                     break;
                 }
 
                 zmq::message_t snd_msg(3);
                 memcpy(snd_msg.data(), "ACK", 3);
-                cmd_skt.send(snd_msg);
+                client_cmd_skt.send(snd_msg);
 
             } // if event
 
         } // while true
+        
+        xport_ep_ptr->wait();
 
         _endpoint->done(true);
     }
@@ -202,7 +221,7 @@ static std::string make_multipart_collection_name(
     // =-=-=-=-=-=-=-
     // build logical collection path for query
     bfs::path phy_path(_phy_path);
-    return _coll_path + ".irods_" + phy_path.filename().string() + "_multipart";
+    return _coll_path + prefix + phy_path.filename().string() + "_multipart";
 
 } // make_multipart_collection_name
 
@@ -247,7 +266,7 @@ static bool query_for_restart(
         for(auto i = 0; i < gen_out->rowCnt; ++i) {
             irods::part_request pr;
             pr.destination_logical_path = _mp_coll + &name->value[name->len * i];
-            pr.offset = std::stol(&size->value[size->len * i]);
+            pr.restart_offset = std::stol(&size->value[size->len * i]);
 
             int id = std::stoi(&resc_id->value[resc_id->len * i]);
             resc_mgr.leaf_id_to_hier( id, pr.resource_hierarchy );
@@ -292,7 +311,7 @@ void resolve_part_object_paths(
     if( !boost::ends_with(_dst_coll, vps)) {
         prefix += vps;
     }
-    
+
     size_t ctr = 0;
     bfs::path phy_path(_phy_path);
     for(auto& p : _resp.parts) {
@@ -321,17 +340,25 @@ void resolve_part_sizes(
     double trunc_sz = std::trunc(even_sz);
 
     for(auto& p : _resp.parts) {
-        p.size = trunc_sz;
+        p.file_size = trunc_sz;
     }
 
     // compute total fractional portion
     double frac_sz = (even_sz - trunc_sz)*_resp.parts.size();
 
     // add fractional portion to first part
-    _resp.parts[0].size += frac_sz;
+    _resp.parts.rbegin()->file_size += frac_sz;
 
 } // resolve_part_sizes
 
+void resolve_number_of_threads(
+    const int  _req_num, 
+    int&       _res_num) {
+
+    // TODO: call PEP to externalize decision making
+    _res_num = _req_num;
+
+} // resolve_number_of_threads
 
 void resolve_part_hierarchies(
     rsComm_t*                  _comm,
@@ -341,10 +368,10 @@ void resolve_part_hierarchies(
     dataObjInp_t obj_inp;
     if(_single_server) {
         memset(&obj_inp, 0, sizeof(obj_inp));
-        
+
         auto& p = _resp.parts[0];
 
-        obj_inp.dataSize = p.size;
+        obj_inp.dataSize = p.file_size;
         rstrcpy(
                 obj_inp.objPath,
                 p.destination_logical_path.c_str(),
@@ -368,7 +395,7 @@ void resolve_part_hierarchies(
         for(auto& p : _resp.parts) {
             memset(&obj_inp, 0, sizeof(obj_inp));
 
-            obj_inp.dataSize = p.size;
+            obj_inp.dataSize = p.file_size;
             rstrcpy(
                 obj_inp.objPath,
                 p.destination_logical_path.c_str(),
@@ -392,15 +419,24 @@ void resolve_part_hierarchies(
 
 void resolve_hostnames(
     irods::multipart_response& _resp) {
-    char hostname_buf[1204];
-    int status = gethostname(hostname_buf, sizeof(hostname_buf));
-    if(status != 0) {
-        //TODO 
-    }
-
     for(auto& p : _resp.parts) {
-        //TODO: resove hostname for leaf resource of hierarchy
-        p.host_name = hostname_buf;
+        // determine leaf resource
+        irods::hierarchy_parser hp;
+        hp.set_string(p.resource_hierarchy);
+        std::string leaf_name;
+        hp.last_resc(leaf_name);
+
+        // resolve resource for leaf
+        irods::resource_ptr leaf_resc;
+        resc_mgr.resolve(leaf_name, leaf_resc);
+
+        // extract the host from the resource
+        std::string resc_host;
+        leaf_resc->get_property<std::string>(
+            irods::RESOURCE_LOCATION,
+            resc_host);
+
+        p.host_name = resc_host;
     }
 } // resolve_hostnames
 
@@ -439,7 +475,7 @@ void register_part_objects(
         memset(&obj_inp, 0, sizeof(obj_inp));
         memset(&opened_inp, 0, sizeof(opened_inp));
 
-        obj_inp.dataSize = p.size;
+        obj_inp.dataSize = p.file_size;
         rstrcpy(
             obj_inp.objPath,
             p.destination_logical_path.c_str(),
@@ -517,6 +553,7 @@ void multipart_executor_server(
         std::cout << "XXXX - destination_collection: " << mp_req.destination_collection << std::endl;
         std::cout << "XXXX - destination_resource: " << mp_req.destination_resource << std::endl;
         std::cout << "XXXX - number_of_parts: " << mp_req.requested_number_of_parts << std::endl;
+        std::cout << "XXXX - number_of_threads: " << mp_req.requested_number_of_threads << std::endl;
 
         std::string mp_coll = make_multipart_collection_name(
                                   mp_req.source_physical_path,
@@ -526,18 +563,24 @@ void multipart_executor_server(
         // do we need to restart? - if so find new offsets ( existing sizes ),
         // number of existing parts, logical paths, physical paths, hosts, hiers, etc
         irods::multipart_response mp_resp;
+        mp_resp.source_physical_path = mp_req.source_physical_path;
+
         bool restart = query_for_restart(comm, mp_coll, mp_resp);
 
         if(restart) {
             resolve_part_sizes(file_size, mp_resp); 
             resolve_hostnames(mp_resp);
+            resolve_number_of_threads(
+                mp_req.requested_number_of_threads,
+                mp_resp.number_of_threads);
 
             // =-=-=-=-=-=-=-
             // print out mp_resp for debug
             for(auto i : mp_resp.parts) {
                 std::cout << "  hn: " << i.host_name 
-                          << "  sz: " << i.size
-                          << "  of: " << i.offset
+                          << "  sz: " << i.file_size
+                          << "  of: " << i.restart_offset
+                          << "  of: " << i.original_offset
                           << "  dp: " << i.destination_logical_path
                           << "  rh: " << i.resource_hierarchy
                           << std::endl;
@@ -554,8 +597,14 @@ void multipart_executor_server(
             resolve_part_object_paths(mp_coll, mp_req.source_physical_path, mp_resp); 
 
             // =-=-=-=-=-=-=-
-            // 3. determine part sizes
+            // 3. resolve part sizes
             resolve_part_sizes(file_size, mp_resp); 
+            
+            // =-=-=-=-=-=-=-
+            // 4. resolve number of threads
+            resolve_number_of_threads(
+                mp_req.requested_number_of_threads,
+                mp_resp.number_of_threads);
 
             // =-=-=-=-=-=-=-
             // X. resolve hierarchy for all parts
@@ -580,27 +629,42 @@ print_mp_response(mp_resp);
         }
 
         // =-=-=-=-=-=-=-
-        // send response object
-        auto out = avro::memoryOutputStream();
-        auto enc = avro::binaryEncoder();
-        enc->init( *out );
-        avro::encode( *enc, mp_resp );
-        auto data = avro::snapshot( *out );
-        bro.send(*data);
-        
-        // =-=-=-=-=-=-=-
         // load and start server-side transport plugin
+        zmq::context_t xport_zmq_ctx(1);
+        irods::api_endpoint* xport_ep_ptr = nullptr;
 
-
-
-
+        zmq::socket_t cmd_skt(xport_zmq_ctx, ZMQ_REQ);
+        cmd_skt.bind("inproc://server_comms");
+        
+        irods::api_v5_to_v5_call_server<irods::multipart_response>(
+            comm,
+            mp_req.operation,
+            xport_ep_ptr,
+            &xport_zmq_ctx,
+            mp_resp); 
 
         // =-=-=-=-=-=-=-
         // wait for finalize message from client
+        zmq::message_t snd_msg(3);
+        memcpy(snd_msg.data(), "REQ", 3);
+        cmd_skt.send(snd_msg);
 
+        zmq::message_t rcv_msg;
+        while(true) {         
+            cmd_skt.recv( &rcv_msg );
+            if(rcv_msg.size()<= 0) {
+                //TODO: need backoff
+                continue;
+            }
+            break;
+        }
+
+        bro.send(rcv_msg);
+
+        xport_ep_ptr->wait();
         // =-=-=-=-=-=-=-
-        // combine parts into data object
-        
+        // wait for finalize message from client
+
         // =-=-=-=-=-=-=-
         // apply metadata
 
@@ -656,7 +720,7 @@ class multipart_api_endpoint : public irods::api_endpoint {
         void init_and_serialize_payload(
             const std::vector<std::string>& _args,
             std::vector<uint8_t>&           _out) {
-            if(_args.size()<7) {
+            if(_args.size()<8) {
                 std::cerr << "api_plugin_multipart: operation physical_path "
                           << "logical_path destination_resource number_of_parts" 
                           << std::endl;
@@ -674,7 +738,8 @@ class multipart_api_endpoint : public irods::api_endpoint {
             mp_req.source_physical_path      = _args[3];
             mp_req.destination_collection    = _args[4];
             mp_req.destination_resource      = _args[5];
-            mp_req.requested_number_of_parts = atoi(_args[6].c_str());
+            mp_req.requested_number_of_parts   = atoi(_args[6].c_str());
+            mp_req.requested_number_of_threads = atoi(_args[7].c_str());
 
             auto out = avro::memoryOutputStream();
             auto enc = avro::binaryEncoder();
