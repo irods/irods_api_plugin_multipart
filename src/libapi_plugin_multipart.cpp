@@ -3,7 +3,6 @@
 #include "apiHandler.hpp"
 #include "rodsPackInstruct.h"
 #include "objStat.h"
-#include "physPath.hpp"
 #include "rcMisc.h"
 #include "rsGenQuery.hpp"
 #include "rsCollCreate.hpp"
@@ -40,15 +39,11 @@ extern irods::resource_manager resc_mgr;
 static const irods::message_broker::data_type REQ_MSG = {'R', 'E', 'Q'};
 static const irods::message_broker::data_type ACK_MSG = {'A', 'C', 'K'};
 static const irods::message_broker::data_type QUIT_MSG = {'q', 'u', 'i', 't'};
-static const irods::message_broker::data_type PROG_MSG = {'p', 'r', 'o', 'g', 'r', 'e', 's', 's'};
-static const irods::message_broker::data_type FINALIZE_MSG = {'F', 'I', 'N', 'A', 'L', 'I', 'Z', 'E'};
-static const irods::message_broker::data_type ERROR_MSG = {'e', 'r', 'r', 'o', 'r'};
 
 void print_mp_response(
         const irods::multipart_response& _resp) {
 
     std::cout << __FUNCTION__ << ":" << __LINE__ << std::endl;
-    std::cout << " number of threads: " << _resp.number_of_threads<< std::endl;
     std::cout << " number of threads: " << _resp.number_of_threads<< std::endl;
     for(auto p : _resp.port_list) {
         std::cout << "port: " << p << std::endl;
@@ -70,13 +65,12 @@ void multipart_executor_client(
     namespace bfs = boost::filesystem;
     typedef irods::message_broker::data_type data_t;
 
+    zmq::socket_t client_cmd_skt(*_endpoint->ctrl_ctx(), ZMQ_REP);
+    client_cmd_skt.connect("inproc://client_comms");
 
     try {
         rcComm_t* comm = nullptr;
         _endpoint->comm<rcComm_t*>(comm);
-
-        irods::message_broker client_cmd_skt("ZMQ_REP", _endpoint->ctrl_ctx());
-        client_cmd_skt.connect("inproc://client_comms");
 
         // =-=-=-=-=-=-=-
         //TODO: parameterize
@@ -98,11 +92,9 @@ void multipart_executor_client(
         bfs::path p(mp_req.source_physical_path);
 
         if(!bfs::exists(p)) {
-#if 0 // TODO - FIXME
             bro.send(QUIT_MSG);
             data_t rcv_msg;
             bro.receive(rcv_msg);
-#endif
             _endpoint->done(true);
             return;
         }
@@ -142,34 +134,54 @@ void multipart_executor_client(
             &xport_zmq_ctx,
             mp_resp); 
 
-        // command and control message loop
-        while(true) {
-            data_t cli_msg;
-            client_cmd_skt.receive(cli_msg, ZMQ_DONTWAIT);
-            if(cli_msg.size()>0) {            
-                // forward message from client to transport control
-                xport_cmd_skt.send(cli_msg);
-                xport_cmd_skt.receive(rcv_msg); // TODO: process?
+        // send a request to the client side transport
+        xport_cmd_skt.send(REQ_MSG);
 
-                if(QUIT_MSG == cli_msg) {
-                    // forward quit from client to multipart instance
-                    bro.send(cli_msg);
-                    data_t rcv_msg;
-                    bro.receive(rcv_msg);
-                    if(ACK_MSG != rcv_msg) {
-                        std::cerr << "client thread reported an error: " << rcv_msg << std::endl;
-                        // TODO: process response?
-                    }
-                    client_cmd_skt.send(rcv_msg);
+        // wait for a status response
+        data_t cmd_rcv_msg;
+        xport_cmd_skt.receive(cmd_rcv_msg);
+
+        std::string cmd_rcv_msg_str;
+        cmd_rcv_msg_str.assign(cmd_rcv_msg.begin(), cmd_rcv_msg.end());
+
+        while(true) {
+            zmq::message_t rcv_msg;
+            bool ret = client_cmd_skt.recv( &rcv_msg, ZMQ_DONTWAIT);
+            if( ret || rcv_msg.size() > 0) {
+ 
+                std::string in_str;
+                in_str.assign(
+                    (char*)rcv_msg.data(),
+                    ((char*)rcv_msg.data())+rcv_msg.size());
+
+                std::cout << "CMD RECV - [" << in_str << "]" << std::endl; 
+                // =-=-=-=-=-=--=
+                // process events from the client 
+                if("quit" == in_str) {
+                    #if 0
+                    // notify server of the event
+                    std::cout << "CMD sending quit" << std::endl;
+                    data_t req_data;
+                    req_data.assign(in_str.begin(), in_str.end()); 
+                    bro.send( req_data );
+                    
+                    data_t resp_data;
+                    bro.receive(resp_data);
+                    #endif
+                    zmq::message_t snd_msg(3);
+                    memcpy(snd_msg.data(), "ACK", 3);
+                    client_cmd_skt.send(snd_msg);
                     break;
                 }
-                else {
-                }
 
-                client_cmd_skt.send(rcv_msg);
-            }
-        } // while
+                zmq::message_t snd_msg(3);
+                memcpy(snd_msg.data(), "ACK", 3);
+                client_cmd_skt.send(snd_msg);
 
+            } // if event
+
+        } // while true
+        
         xport_ep_ptr->wait();
 
         _endpoint->done(true);
@@ -186,6 +198,7 @@ void multipart_executor_client(
         std::cerr << _e.what() << std::endl;
         _endpoint->done(true);
     }
+
 } // multipart_executor_client
 
 
@@ -211,24 +224,6 @@ static std::string make_multipart_collection_name(
     return _coll_path + prefix + phy_path.filename().string() + "_multipart";
 
 } // make_multipart_collection_name
-
-static std::string make_multipart_logical_path(
-        const std::string& _phy_path,
-        const std::string& _coll_path) {
-    namespace bfs = boost::filesystem;
-
-    std::string prefix; 
-    const std::string vps = irods::get_virtual_path_separator();
-    if( !boost::ends_with(_coll_path, vps)) {
-        prefix += vps;
-    }
-
-    // =-=-=-=-=-=-=-
-    // build logical collection path for query
-    bfs::path phy_path(_phy_path);
-    return _coll_path + prefix + phy_path.filename().string();
-
-} // make_multipart_logical_path
 
 static bool query_for_restart(
     rsComm_t*                  _comm,
@@ -344,17 +339,14 @@ void resolve_part_sizes(
     // remove fractional portion
     double trunc_sz = std::trunc(even_sz);
 
-    uint64_t offset = 0;
     for(auto& p : _resp.parts) {
-        p.file_size       = trunc_sz;
-        p.original_offset = offset;
-        offset += trunc_sz;
+        p.file_size = trunc_sz;
     }
 
     // compute total fractional portion
     double frac_sz = (even_sz - trunc_sz)*_resp.parts.size();
 
-    // add fractional portion to last part
+    // add fractional portion to first part
     _resp.parts.rbegin()->file_size += frac_sz;
 
 } // resolve_part_sizes
@@ -425,7 +417,7 @@ void resolve_part_hierarchies(
     }
 } // resolve_part_hierarchies
 
-void resolve_part_hostnames(
+void resolve_hostnames(
     irods::multipart_response& _resp) {
     for(auto& p : _resp.parts) {
         // determine leaf resource
@@ -446,55 +438,7 @@ void resolve_part_hostnames(
 
         p.host_name = resc_host;
     }
-} // resolve_part_hostnames
-
-std::string make_physical_path(
-    const std::string& _resource_hierarchy,
-    const std::string& _destination_logical_path) {
-    // determine leaf resource
-    irods::hierarchy_parser hp;
-    hp.set_string(_resource_hierarchy);
-    std::string leaf_name;
-    hp.last_resc(leaf_name);
-
-    // resolve resource for leaf
-    irods::resource_ptr leaf_resc;
-    irods::error ret = resc_mgr.resolve(
-                           leaf_name,
-                           leaf_resc);
-    if(!ret.ok()) {
-        THROW(ret.code(), ret.result());
-    }
-
-    // extract the vault path from the resource
-    std::string vault_path;
-    leaf_resc->get_property<std::string>(
-        irods::RESOURCE_PATH,
-        vault_path);
-    if(!ret.ok()) {
-        THROW(ret.code(), ret.result());
-    }
-
-    char out_path[MAX_NAME_LEN];
-    int status = setPathForGraftPathScheme(
-                     const_cast<char*>(_destination_logical_path.c_str()),
-                     vault_path.c_str(),
-                     0, 0, 1, out_path);
-    if(status < 0) {
-        THROW(status, "setPathForGraftPathScheme failed");
-    }
-
-    return out_path;
-} // make_physical_path
-
-void resolve_part_physical_paths(
-    irods::multipart_response& _resp) {
-    for(auto& p : _resp.parts) {
-        p.destination_physical_path = make_physical_path(
-                                          p.resource_hierarchy,
-                                          p.destination_logical_path);
-    } // for
-} // resolve_part_physical_paths
+} // resolve_hostnames
 
 void create_multipart_collection(
     rsComm_t*          _comm,
@@ -620,15 +564,12 @@ void multipart_executor_server(
         // number of existing parts, logical paths, physical paths, hosts, hiers, etc
         irods::multipart_response mp_resp;
         mp_resp.source_physical_path = mp_req.source_physical_path;
-        mp_resp.destination_logical_path = make_multipart_logical_path(
-                                               mp_req.source_physical_path,
-                                               mp_req.destination_collection);
 
         bool restart = query_for_restart(comm, mp_coll, mp_resp);
 
         if(restart) {
             resolve_part_sizes(file_size, mp_resp); 
-            resolve_part_hostnames(mp_resp);
+            resolve_hostnames(mp_resp);
             resolve_number_of_threads(
                 mp_req.requested_number_of_threads,
                 mp_resp.number_of_threads);
@@ -646,35 +587,45 @@ void multipart_executor_server(
             }
         }
         else {
-            // determine number of parts
+            // =-=-=-=-=-=-=-
+            // 1. determine number of parts
             size_t num_parts = resolve_number_of_parts(mp_req.requested_number_of_parts);
             mp_resp.parts.resize(num_parts);
 
-            // determine obj paths
+            // =-=-=-=-=-=-=-
+            // 2. determine obj paths
             resolve_part_object_paths(mp_coll, mp_req.source_physical_path, mp_resp); 
 
+            // =-=-=-=-=-=-=-
             // 3. resolve part sizes
             resolve_part_sizes(file_size, mp_resp); 
             
-            // resolve number of threads
+            // =-=-=-=-=-=-=-
+            // 4. resolve number of threads
             resolve_number_of_threads(
                 mp_req.requested_number_of_threads,
                 mp_resp.number_of_threads);
 
-            // resolve hierarchy for all parts
+            // =-=-=-=-=-=-=-
+            // X. resolve hierarchy for all parts
             resolve_part_hierarchies(comm, true, mp_resp);
 
-            // resolve part hosts
-            resolve_part_hostnames(mp_resp);
+            // =-=-=-=-=-=-=-
+            // X. resolve part hosts
+            resolve_hostnames(mp_resp);
 
-            // resolve part physical paths
-            resolve_part_physical_paths(mp_resp);
+print_mp_response(mp_resp);
 
-            // create multipart collection
+            // =-=-=-=-=-=-=-
+            // X. create multipart collection
             create_multipart_collection(comm, mp_coll);
 
-            // bulk-reg/create part objects
+            // =-=-=-=-=-=-=-
+            // X. bulk-reg/create part objects
             register_part_objects(comm, mp_resp);
+
+            // =-=-=-=-=-=-=-
+            // X. find open ports
         }
 
         // =-=-=-=-=-=-=-
@@ -682,8 +633,7 @@ void multipart_executor_server(
         zmq::context_t xport_zmq_ctx(1);
         irods::api_endpoint* xport_ep_ptr = nullptr;
 
-        //zmq::socket_t cmd_skt(xport_zmq_ctx, ZMQ_REQ);
-        irods::message_broker cmd_skt("ZMQ_REQ", &xport_zmq_ctx);
+        zmq::socket_t cmd_skt(xport_zmq_ctx, ZMQ_REQ);
         cmd_skt.bind("inproc://server_comms");
         
         irods::api_v5_to_v5_call_server<irods::multipart_response>(
@@ -694,18 +644,22 @@ void multipart_executor_server(
             mp_resp); 
 
         // =-=-=-=-=-=-=-
-        // wait for response object from client
-        cmd_skt.send(REQ_MSG);
-        data_t rcv_msg;
-        cmd_skt.receive(rcv_msg);
+        // wait for finalize message from client
+        zmq::message_t snd_msg(3);
+        memcpy(snd_msg.data(), "REQ", 3);
+        cmd_skt.send(snd_msg);
 
-        // respond to request from mp client exec
+        zmq::message_t rcv_msg;
+        while(true) {         
+            cmd_skt.recv( &rcv_msg );
+            if(rcv_msg.size()<= 0) {
+                //TODO: need backoff
+                continue;
+            }
+            break;
+        }
+
         bro.send(rcv_msg);
-
-        // TODO: while message loop here
-        data_t quit_rcv_msg;
-        bro.receive(quit_rcv_msg);
-        bro.send(ACK_MSG);
 
         xport_ep_ptr->wait();
         // =-=-=-=-=-=-=-
