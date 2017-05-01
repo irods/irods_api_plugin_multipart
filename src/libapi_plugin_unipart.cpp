@@ -75,10 +75,10 @@ void transfer_executor_client(
         conn_sstr << _port;
         bro.connect(conn_sstr.str());
 
-        bool quit_received_flag      = false;
+        //bool quit_received_flag      = false;
         const ssize_t block_size = 4*1024*1024; // TODO: parameterize
         for(auto& part : _part_queue) {
-            data_t cmd_rcv_msg;
+            /*data_t cmd_rcv_msg;
             cmd_skt.receive(cmd_rcv_msg, ZMQ_DONTWAIT);
             if(cmd_rcv_msg.size() > 0) {
                 if(QUIT_MSG == cmd_rcv_msg) {
@@ -86,7 +86,7 @@ void transfer_executor_client(
                     quit_received_flag = true;
                     break;
                 }
-            }
+            }*/
 
             // build a unipart request    
             irods::unipart_request uni_req;
@@ -130,7 +130,7 @@ void transfer_executor_client(
             ssize_t bytes_to_read = part.file_size;
             while(bytes_to_read > 0) {
                 // handle possible incoming command requests
-                data_t cmd_rcv_msg;
+                /*data_t cmd_rcv_msg;
                 cmd_skt.receive(cmd_rcv_msg, ZMQ_DONTWAIT);
                 if(cmd_rcv_msg.size() > 0) {
                     if(QUIT_MSG == cmd_rcv_msg) {
@@ -142,7 +142,7 @@ void transfer_executor_client(
                     else if(PROG_MSG == cmd_rcv_msg) {
                         // TODO: handle progress request
                     }
-                }
+                }*/
 
                 // read the data - block size or remainder
                 data_t snd_msg(read_size);
@@ -172,9 +172,9 @@ void transfer_executor_client(
             } // while
 
             // if we got a quit while transporting a part, quit gracefully
-            if(quit_received_flag) {
+            /*if(quit_received_flag) {
                 break;
-            }
+            }*/
 
         } // for
 
@@ -199,6 +199,7 @@ void transfer_executor_client(
 
     }
     catch(const zmq::error_t& _e) {
+        std::cerr << _e.what() << std::endl;
         THROW(SYS_SOCK_CONNECT_ERR, _e.what());
     }
     catch(const boost::bad_any_cast& _e) {
@@ -214,7 +215,7 @@ void transfer_executor_client(
 
 void unipart_executor_client(
         irods::api_endpoint*  _endpoint ) {
-    typedef irods::message_broker::data_type data_t;
+    //typedef irods::message_broker::data_type data_t;
     try {
         // open the control channel back to the multipart client executor
         irods::message_broker cmd_skt("ZMQ_REP", _endpoint->ctrl_ctx());
@@ -267,7 +268,7 @@ void unipart_executor_client(
                 part_queues[tid])); 
         } // for thread id
 
-        bool quit_received_flag = false;
+        /*bool quit_received_flag = false;
         // receive and process commands
         while(true) {
             data_t cli_msg;
@@ -290,7 +291,7 @@ void unipart_executor_client(
             }
 
             cmd_skt.send(ACK_MSG);
-        } // while
+        }*/ // while
 
         // wait for all threads to complete
         for( size_t tid = 0; tid < threads.size(); ++tid) {
@@ -300,16 +301,19 @@ void unipart_executor_client(
     }
     catch(const zmq::error_t& _e) {
         //TODO: notify client of failure
+        std::cerr << _e.what() << std::endl;
         _endpoint->done(true);
         THROW(SYS_SOCK_CONNECT_ERR, _e.what());
     }
     catch(const boost::bad_any_cast& _e) {
         //TODO: notify client of failure
+        std::cerr << _e.what() << std::endl;
         _endpoint->done(true);
         THROW(INVALID_ANY_CAST, _e.what());
     }
     catch(const irods::exception& _e) {
         //TODO: notify client of failure
+        std::cerr << _e.what() << std::endl;
         _endpoint->done(true);
         throw;
     }
@@ -548,9 +552,10 @@ int64_t stat_part(
     return stbuf->st_size;
 } // stat_part
 
-void stat_parts_and_update_catalog(
+bool stat_parts_and_update_catalog(
         rsComm_t*                        _comm,
         const irods::multipart_response& _mp_resp) {
+    bool ret_val = true;
     try {
         for(auto& p : _mp_resp.parts) {
             // determine leaf resource
@@ -584,6 +589,11 @@ void stat_parts_and_update_catalog(
                                        p.destination_logical_path,
                                        p.resource_hierarchy,
                                        p.host_name);
+            // was the part successfully transferred?
+            if(file_size != p.file_size) {
+                ret_val = false;
+            }
+
             update_object_size_and_phypath(
                 _comm,
                 file_size,
@@ -593,8 +603,12 @@ void stat_parts_and_update_catalog(
         } // for
     }
     catch(const irods::exception& _e) {
+        std::cerr << _e.what() << std::endl;
         throw;
     }
+    
+    return ret_val;
+
 } // stat_parts_and_update_catalog
 
 void remove_multipart_collection(
@@ -708,7 +722,6 @@ void reassemble_part_objects(
                 // bytes read is in the return code
                 ssize_t read_size = ret.code();
                 if(0 == read_size) {
-                    std::cout << "XXXX - end of part" << std::endl;
                     break;
                 }
 
@@ -780,8 +793,8 @@ void reassemble_part_objects(
 #endif
 
 void transfer_executor_server(
-    rsComm_t*                               _comm,
-    std::promise<int>*                      _port_promise) {
+    rsComm_t*          _comm,
+    std::promise<int>* _port_promise) {
 #ifdef RODS_SERVER
     typedef irods::message_broker::data_type data_t;
     
@@ -888,7 +901,9 @@ void transfer_executor_server(
 
     }
     catch(const irods::exception& _e) {
-        throw;
+        std::cerr << _e.what() << std::endl;
+        // TODO: let thread exit cleanly?
+        //throw;
     }
 #endif
 } // transfer_executor_server
@@ -898,6 +913,7 @@ void unipart_executor_server(
 #ifdef RODS_SERVER
     typedef irods::message_broker::data_type data_t;
 
+    bool xfer_complete = false;
     irods::multipart_response mp_resp;
     try {
         rsComm_t* comm = nullptr;
@@ -964,7 +980,7 @@ void unipart_executor_server(
             }
 
             // update the catalog?
-            stat_parts_and_update_catalog(comm, mp_resp);
+            xfer_complete = stat_parts_and_update_catalog(comm, mp_resp);
     
         }
         else {
@@ -998,17 +1014,19 @@ void unipart_executor_server(
         throw;
     }
 
-    try {
-        rsComm_t* comm = nullptr;
-        _endpoint->comm<rsComm_t*>(comm);
-        
-        // if nothing has exploded, reassemble the parts
-        reassemble_part_objects(comm, mp_resp);
-    }
-    catch(const irods::exception& _e) {
-        irods::log(LOG_ERROR, _e.what());
-        _endpoint->done(true);
-        throw;
+    if(xfer_complete) {
+        try {
+            rsComm_t* comm = nullptr;
+            _endpoint->comm<rsComm_t*>(comm);
+            
+            // if nothing has exploded, reassemble the parts
+            reassemble_part_objects(comm, mp_resp);
+        }
+        catch(const irods::exception& _e) {
+            irods::log(LOG_ERROR, _e.what());
+            _endpoint->done(true);
+            throw;
+        }
     }
 
     _endpoint->done(true);

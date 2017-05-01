@@ -148,8 +148,8 @@ void multipart_executor_client(
             client_cmd_skt.receive(cli_msg, ZMQ_DONTWAIT);
             if(cli_msg.size()>0) {            
                 // forward message from client to transport control
-                xport_cmd_skt.send(cli_msg);
-                xport_cmd_skt.receive(rcv_msg); // TODO: process?
+                //xport_cmd_skt.send(cli_msg);
+                //xport_cmd_skt.receive(rcv_msg); // TODO: process?
 
                 if(QUIT_MSG == cli_msg) {
                     // forward quit from client to multipart instance
@@ -177,14 +177,17 @@ void multipart_executor_client(
     catch(const zmq::error_t& _e) {
         std::cerr << _e.what() << std::endl;
         _endpoint->done(true);
+        THROW(SYS_SOCK_CONNECT_ERR, _e.what());
     }
     catch(const boost::bad_any_cast& _e) {
         std::cerr << _e.what() << std::endl;
         _endpoint->done(true);
+        THROW(INVALID_ANY_CAST, _e.what());
     }
     catch(const boost::bad_lexical_cast& _e) {
         std::cerr << _e.what() << std::endl;
         _endpoint->done(true);
+        THROW(INVALID_LEXICAL_CAST, _e.what());
     }
 } // multipart_executor_client
 
@@ -208,7 +211,7 @@ static std::string make_multipart_collection_name(
     // =-=-=-=-=-=-=-
     // build logical collection path for query
     bfs::path phy_path(_phy_path);
-    return _coll_path + prefix + phy_path.filename().string() + "_multipart";
+    return _coll_path + prefix + phy_path.filename().string() + "_multipart" + vps;
 
 } // make_multipart_collection_name
 
@@ -238,7 +241,7 @@ static bool query_for_restart(
 
     // =-=-=-=-=-=-=-
     // determine if logical collection exists, get obj list
-    std::string query("select DATA_NAME, DATA_SIZE, DATA_RESC_ID where COLL_NAME like '");
+    std::string query("select DATA_NAME, DATA_PATH, DATA_SIZE, DATA_RESC_ID where COLL_NAME like '");
     query += _mp_coll + "%'";
 
     genQueryInp_t gen_inp;
@@ -266,11 +269,13 @@ static bool query_for_restart(
 
         ret_val = true; 
         sqlResult_t* name    = getSqlResultByInx( gen_out, COL_DATA_NAME );
+        sqlResult_t* path    = getSqlResultByInx( gen_out, COL_D_DATA_PATH );
         sqlResult_t* size    = getSqlResultByInx( gen_out, COL_DATA_SIZE );
         sqlResult_t* resc_id = getSqlResultByInx( gen_out, COL_D_RESC_ID );
         for(auto i = 0; i < gen_out->rowCnt; ++i) {
             irods::part_request pr;
             pr.destination_logical_path = _mp_coll + &name->value[name->len * i];
+            pr.destination_physical_path = &path->value[name->len * i];
             pr.restart_offset = std::stol(&size->value[size->len * i]);
 
             int id = std::stoi(&resc_id->value[resc_id->len * i]);
@@ -604,13 +609,14 @@ void multipart_executor_server(
 
         // =-=-=-=-=-=-=-
         // start with printing the values
+#if 0
         std::cout << "XXXX - operation: " << mp_req.operation << std::endl;
         std::cout << "XXXX - source_physical_path: " << mp_req.source_physical_path << std::endl;
         std::cout << "XXXX - destination_collection: " << mp_req.destination_collection << std::endl;
         std::cout << "XXXX - destination_resource: " << mp_req.destination_resource << std::endl;
         std::cout << "XXXX - number_of_parts: " << mp_req.requested_number_of_parts << std::endl;
         std::cout << "XXXX - number_of_threads: " << mp_req.requested_number_of_threads << std::endl;
-
+#endif
         std::string mp_coll = make_multipart_collection_name(
                                   mp_req.source_physical_path,
                                   mp_req.destination_collection);
@@ -641,6 +647,7 @@ void multipart_executor_server(
                           << "  of: " << i.restart_offset
                           << "  of: " << i.original_offset
                           << "  dp: " << i.destination_logical_path
+                          << "  pp: " << i.destination_physical_path
                           << "  rh: " << i.resource_hierarchy
                           << std::endl;
             }
@@ -682,7 +689,6 @@ void multipart_executor_server(
         zmq::context_t xport_zmq_ctx(1);
         irods::api_endpoint* xport_ep_ptr = nullptr;
 
-        //zmq::socket_t cmd_skt(xport_zmq_ctx, ZMQ_REQ);
         irods::message_broker cmd_skt("ZMQ_REQ", &xport_zmq_ctx);
         cmd_skt.bind("inproc://server_comms");
         
@@ -722,10 +728,11 @@ void multipart_executor_server(
         irods::log(LOG_ERROR, _e.what());
         _endpoint->done(true);
         //TODO: notify client of failure
-        return;
+        THROW(INVALID_ANY_CAST, _e.what());
     }
     catch(const irods::exception& _e) {
         std::cout << "EXCEPTION: " << _e.what() << std::endl;
+        throw;
     }
 #endif
 
