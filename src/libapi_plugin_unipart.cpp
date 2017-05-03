@@ -11,6 +11,10 @@
 #include "rsDataObjUnlink.hpp"
 #include "rsRmColl.hpp"
 
+#ifdef RODS_SERVER
+#include "miscServerFunct.hpp"
+#endif
+
 #include "irods_stacktrace.hpp"
 #include "irods_server_api_call.hpp"
 #include "irods_re_serialization.hpp"
@@ -18,6 +22,7 @@
 #include "irods_api_endpoint.hpp"
 #include "irods_virtual_path.hpp"
 #include "irods_resource_manager.hpp"
+#include "irods_resource_backport.hpp"
 #include "irods_file_object.hpp"
 
 //#include "irods_hostname.hpp"
@@ -45,6 +50,27 @@ static const irods::message_broker::data_type QUIT_MSG = {'q', 'u', 'i', 't'};
 static const irods::message_broker::data_type FINALIZE_MSG = {'F', 'I', 'N', 'A', 'L', 'I', 'Z', 'E'};
 static const irods::message_broker::data_type ERROR_MSG = {'e', 'r', 'r', 'o', 'r'};
 static const irods::message_broker::data_type PROG_MSG = {'p', 'r', 'o', 'g', 'r', 'e', 's', 's'};
+
+void print_mp_response(
+        const irods::multipart_response& _resp) {
+
+    std::cout << __FUNCTION__ << ":" << __LINE__ << std::endl;
+    std::cout << " number of threads: " << _resp.number_of_threads<< std::endl;
+    std::cout << " number of threads: " << _resp.number_of_threads<< std::endl;
+    for(auto p : _resp.port_list) {
+        std::cout << "port: " << p << std::endl;
+    }
+
+    for(auto p : _resp.parts) {
+        std::cout << "host_name: " << p.host_name << std::endl;
+        std::cout << "file_size: " << p.file_size << std::endl;
+        std::cout << "restart_offset: " << p.restart_offset << std::endl;
+        std::cout << "original_offset: " << p.original_offset << std::endl;
+        std::cout << "destination_logical_path: " << p.destination_logical_path << std::endl;
+        std::cout << "resource_hierarchy: " << p.resource_hierarchy << std::endl;
+    }
+}
+
 
 void transfer_executor_client(
     const std::string&                      _file_name,
@@ -907,22 +933,61 @@ void transfer_executor_server(
     }
 #endif
 } // transfer_executor_server
-    
-void unipart_executor_server(
-        irods::api_endpoint*  _endpoint ) {
+
+bool server_executor_impl(
+    rsComm_t*                  _comm,
+    irods::message_broker&     _cmd_skt,
+    irods::multipart_response& _mp_resp) {
 #ifdef RODS_SERVER
     typedef irods::message_broker::data_type data_t;
 
-    bool xfer_complete = false;
+    std::vector<std::unique_ptr<std::thread>> threads(_mp_resp.number_of_threads); 
+    std::vector<std::promise<int>>            promises(_mp_resp.number_of_threads);
+
+    // start threads to recieve part data
+    for(int tid = 0; tid <_mp_resp.number_of_threads; ++tid) {
+        threads[tid] = std::make_unique<std::thread>(
+                transfer_executor_server,
+                _comm,
+                &promises[tid]);
+    }
+
+    // wait until all ports are bound and fill in
+    // the ports in the response object
+    for( size_t pid = 0; pid < promises.size(); ++pid) {
+        auto f = promises[pid].get_future();
+        f.wait();
+        _mp_resp.port_list.push_back( f.get() );
+    }
+
+    data_t rcv_msg;
+    _cmd_skt.receive(rcv_msg);
+
+    // respond with the object
+    auto out = avro::memoryOutputStream();
+    auto enc = avro::binaryEncoder();
+    enc->init( *out );
+    avro::encode( *enc, _mp_resp );
+    auto repl_data = avro::snapshot( *out );
+
+    _cmd_skt.send(*repl_data);
+
+    // wait for all threads to complete
+    for( size_t tid = 0; tid < threads.size(); ++tid) {
+        threads[tid]->join();
+    }
+
+    // update the catalog?
+    return stat_parts_and_update_catalog(_comm, _mp_resp);
+#endif
+    return false;
+} // server_executor_impl
+
+void unipart_executor_server(
+        irods::api_endpoint*  _endpoint ) {
+#ifdef RODS_SERVER
     irods::multipart_response mp_resp;
     try {
-        rsComm_t* comm = nullptr;
-        _endpoint->comm<rsComm_t*>(comm);
-
-        // open the control channel back to the multipart server executor
-        irods::message_broker cmd_skt("ZMQ_REP", _endpoint->ctrl_ctx());
-        cmd_skt.connect("inproc://server_comms");
-
         // extract the payload
         _endpoint->payload<irods::multipart_response>(mp_resp);
         if(mp_resp.parts.empty()) {
@@ -933,6 +998,9 @@ void unipart_executor_server(
             THROW(SYS_INVALID_INPUT_PARAM, "invalid number of threads");
         }
 
+        rsComm_t* comm = nullptr;
+        _endpoint->comm<rsComm_t*>(comm);
+
         // guarantee that all parts have same host_name and resource_hierarchy
         // for this plugin all parts route as single resource for reassembly
         for(auto& p : mp_resp.parts) {
@@ -940,9 +1008,18 @@ void unipart_executor_server(
             p.resource_hierarchy = mp_resp.parts.begin()->resource_hierarchy;
         }
 
+        // open the control channel back to the multipart server executor
+        irods::message_broker cmd_skt("ZMQ_REP", _endpoint->ctrl_ctx());
+        cmd_skt.connect("inproc://server_comms");
+
         // by convention choose the first resource as our target
         const std::string& host_name = mp_resp.parts.begin()->host_name;
         if(hostname_resolves_to_local_address(host_name.c_str())) {
+#if 1
+            if(server_executor_impl(comm, cmd_skt, mp_resp)) {
+                reassemble_part_objects(comm, mp_resp);
+            }
+#else
             std::vector<std::unique_ptr<std::thread>> threads(mp_resp.number_of_threads); 
             std::vector<std::promise<int>>            promises(mp_resp.number_of_threads);
 
@@ -981,21 +1058,91 @@ void unipart_executor_server(
 
             // update the catalog?
             xfer_complete = stat_parts_and_update_catalog(comm, mp_resp);
-    
+#endif
         }
         else {
             // redirect, we are not the correct server
-        }
-    }
-    catch(const zmq::error_t& _e) {
-        irods::log(LOG_ERROR, _e.what());
+            int remote_flag = 0;
+            rodsServerHost_t* server_host = nullptr; 
+            irods::error ret = irods::get_host_for_hier_string(
+                                   mp_resp.parts.begin()->resource_hierarchy,
+                                   remote_flag,
+                                   server_host);
+            if(!ret.ok()) {
+                THROW(ret.code(), ret.result());
+            }
+            
+            int status = svrToSvrConnect(comm, server_host);
+            if(status < 0) {
+                THROW(status, "svrToSvrConnect failed for ");
+            }
 
-        rsComm_t* comm = nullptr;
-        _endpoint->comm<rsComm_t*>(comm);
-        stat_parts_and_update_catalog(comm, mp_resp);
+            irods::api_envelope envelope;
+            envelope.endpoint = "api_plugin_unipart"; // TODO: magic string
+            envelope.connection_type = irods::API_EP_SVR_TO_SVR;
+            envelope.payload.clear();
 
-        _endpoint->done(true);
-        THROW(SYS_SOCK_CONNECT_ERR, _e.what());
+            auto p_out = avro::memoryOutputStream();
+            auto p_enc = avro::binaryEncoder();
+            p_enc->init( *p_out );
+            avro::encode( *p_enc, mp_resp );
+            auto p_data = avro::snapshot( *p_out );
+
+            envelope.payload.resize(p_data->size());
+            envelope.payload.assign(p_data->begin(), p_data->end());
+            
+            auto e_out = avro::memoryOutputStream();
+            auto e_enc = avro::binaryEncoder();
+            e_enc->init( *e_out );
+            avro::encode( *e_enc, envelope );
+            auto e_data = avro::snapshot( *e_out );
+
+            bytesBuf_t inp;
+            memset(&inp, 0, sizeof(bytesBuf_t));
+            inp.len = e_data->size();
+            inp.buf = e_data->data();
+
+            void *tmp_out = NULL;
+            status = procApiRequest(
+                             server_host->conn,
+                             5000, &inp, NULL,
+                             &tmp_out, NULL );
+            if ( status < 0 ) {
+                THROW(status, "v5 API failed");
+            }
+            else {
+                if ( tmp_out != NULL ) {
+                    portalOprOut_t* portal = static_cast<portalOprOut_t*>( tmp_out );
+
+                   // TODO: we need to bridge the server_comms inproc socket to the 
+                   // remote socket we are creating here 
+                    irods::message_broker rem_bro("ZMQ_REQ");
+                    std::stringstream conn_sstr;
+                    conn_sstr << "tcp://" << mp_resp.parts.begin()->host_name << ":";
+                    conn_sstr << portal->portList.portNum;
+                    rem_bro.connect(conn_sstr.str());
+
+                    typedef irods::message_broker::data_type data_t;
+                    data_t rcv_msg;
+                    cmd_skt.receive(rcv_msg);
+
+                    rem_bro.send(rcv_msg);
+                    rem_bro.receive(rcv_msg);
+                    
+                    cmd_skt.send(rcv_msg);
+
+                    rcOprComplete(server_host->conn, 0);
+                }
+                else {
+                    printf( "ERROR: the 'out' variable is null\n" );
+                }
+            }
+
+
+
+            rcDisconnect(server_host->conn);
+
+        } // else
     }
     catch(const boost::bad_any_cast& _e) {
         // cannot update catalog, no mp_resp
@@ -1014,21 +1161,6 @@ void unipart_executor_server(
         throw;
     }
 
-    if(xfer_complete) {
-        try {
-            rsComm_t* comm = nullptr;
-            _endpoint->comm<rsComm_t*>(comm);
-            
-            // if nothing has exploded, reassemble the parts
-            reassemble_part_objects(comm, mp_resp);
-        }
-        catch(const irods::exception& _e) {
-            irods::log(LOG_ERROR, _e.what());
-            _endpoint->done(true);
-            throw;
-        }
-    }
-
     _endpoint->done(true);
 
 #endif
@@ -1036,8 +1168,65 @@ void unipart_executor_server(
 
 void unipart_executor_server_to_server(
         irods::api_endpoint*  _endpoint ) {
+#ifdef RODS_SERVER
+    try {
+        irods::message_broker bro("ZMQ_REP");
+        const int start_port = irods::get_server_property<const int>(
+                                   irods::CFG_SERVER_PORT_RANGE_START_KW);
+        const int  end_port = irods::get_server_property<const int>(
+                                  irods::CFG_SERVER_PORT_RANGE_END_KW);
+        int port = bro.bind_to_port_in_range(start_port, end_port);
+        _endpoint->port(port);
+
+        irods::multipart_response mp_resp;
+        // extract the payload
+        _endpoint->payload<irods::multipart_response>(mp_resp);
+        if(mp_resp.parts.empty()) {
+            THROW(SYS_INVALID_INPUT_PARAM, "empty parts array");
+        }
+
+        if(mp_resp.number_of_threads <= 0) {
+            THROW(SYS_INVALID_INPUT_PARAM, "invalid number of threads");
+        }
+
+        rsComm_t* comm = nullptr;
+        _endpoint->comm<rsComm_t*>(comm);
+
+        // guarantee that all parts have same host_name and resource_hierarchy
+        // for this plugin all parts route as single resource for reassembly
+        for(auto& p : mp_resp.parts) {
+            p.host_name = mp_resp.parts.begin()->host_name;
+            p.resource_hierarchy = mp_resp.parts.begin()->resource_hierarchy;
+        }
+
+        // by convention choose the first resource as our target
+        const std::string& host_name = mp_resp.parts.begin()->host_name;
+        if(hostname_resolves_to_local_address(host_name.c_str())) {
+            // open the control channel back to the unipart server executor
+#if 1
+            if(server_executor_impl(comm, bro, mp_resp)) {
+                reassemble_part_objects(comm, mp_resp);
+            }
+#endif
+        }
+        else {
+            // TODO: should not get here
+        }
+    }
+    catch(const boost::bad_any_cast& _e) {
+        // cannot update catalog, no mp_resp
+        irods::log(LOG_ERROR, _e.what());
+        _endpoint->done(true);
+        THROW(INVALID_ANY_CAST, _e.what());
+    }
+    catch(const irods::exception& _e) {
+        irods::log(LOG_ERROR, _e.what());
+        _endpoint->done(true);
+        throw;
+    }
+
     _endpoint->done(true);
-    return;
+#endif
 } // unipart_executor_server_to_server
 
 
@@ -1072,6 +1261,15 @@ class unipart_api_endpoint : public irods::api_endpoint {
         // used for server-side initialization
         void decode_and_assign_payload(
             const std::vector<uint8_t>& _in) {
+            auto in = avro::memoryInputStream(
+                          &_in[0],
+                          _in.size());
+            auto dec = avro::binaryDecoder();
+            dec->init( *in );
+            irods::multipart_response mp_resp;
+            avro::decode( *dec, mp_resp );
+            payload_ = mp_resp;
+
         }
 
         // =-=-=-=-=-=-=-

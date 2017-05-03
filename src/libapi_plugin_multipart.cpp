@@ -376,6 +376,7 @@ void resolve_number_of_threads(
 void resolve_part_hierarchies(
     rsComm_t*                  _comm,
     bool                       _single_server,
+    const std::string&         _dst_resc,
     irods::multipart_response& _resp) {
 
     dataObjInp_t obj_inp;
@@ -386,16 +387,21 @@ void resolve_part_hierarchies(
 
         obj_inp.dataSize = p.file_size;
         rstrcpy(
-                obj_inp.objPath,
-                p.destination_logical_path.c_str(),
-                MAX_NAME_LEN);
+            obj_inp.objPath,
+            p.destination_logical_path.c_str(),
+            MAX_NAME_LEN);
+
+        addKeyVal(
+            &obj_inp.condInput,
+            RESC_NAME_KW,
+            _dst_resc.c_str());
 
         std::string hier;
         irods::error ret = irods::resolve_resource_hierarchy(
-                irods::CREATE_OPERATION,
-                _comm,
-                &obj_inp,
-                hier );
+                               irods::CREATE_OPERATION,
+                               _comm,
+                               &obj_inp,
+                               hier );
         if(!ret.ok()) {
             THROW(ret.code(), ret.result());
         }
@@ -607,16 +613,6 @@ void multipart_executor_server(
         irods::multipart_request mp_req;
         _endpoint->payload<irods::multipart_request>(mp_req);
 
-        // =-=-=-=-=-=-=-
-        // start with printing the values
-#if 0
-        std::cout << "XXXX - operation: " << mp_req.operation << std::endl;
-        std::cout << "XXXX - source_physical_path: " << mp_req.source_physical_path << std::endl;
-        std::cout << "XXXX - destination_collection: " << mp_req.destination_collection << std::endl;
-        std::cout << "XXXX - destination_resource: " << mp_req.destination_resource << std::endl;
-        std::cout << "XXXX - number_of_parts: " << mp_req.requested_number_of_parts << std::endl;
-        std::cout << "XXXX - number_of_threads: " << mp_req.requested_number_of_threads << std::endl;
-#endif
         std::string mp_coll = make_multipart_collection_name(
                                   mp_req.source_physical_path,
                                   mp_req.destination_collection);
@@ -669,7 +665,7 @@ void multipart_executor_server(
                 mp_resp.number_of_threads);
 
             // resolve hierarchy for all parts
-            resolve_part_hierarchies(comm, true, mp_resp);
+            resolve_part_hierarchies(comm, true, mp_req.destination_resource, mp_resp);
 
             // resolve part hosts
             resolve_part_hostnames(mp_resp);
