@@ -2,8 +2,8 @@
     "name": "multipart_response",
     "type": "record",
     "fields": [
-        {"name": "destination_logical_path", "type": "string"},
-        {"name": "source_physical_path", "type": "string"},
+        {"name": "data_object_path", "type": "string"},
+        {"name": "file_path", "type": "string"},
         {"name": "number_of_threads", "type": "int"},
         {"name": "port_list", "type": { "type": "array", "items": "int"} },
         {
@@ -18,8 +18,8 @@
                         {"name": "file_size", "type": "long"},
                         {"name": "restart_offset", "type": "long"},
                         {"name": "original_offset", "type": "long"},
-                        {"name": "destination_logical_path", "type": "string"},
-                        {"name": "destination_physical_path", "type": "string"},
+                        {"name": "logical_path", "type": "string"},
+                        {"name": "physical_path", "type": "string"},
                         {"name": "resource_hierarchy", "type": "string"}
                     ]
                 }

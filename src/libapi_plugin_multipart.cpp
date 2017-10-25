@@ -27,22 +27,26 @@
 #include "boost/filesystem/operations.hpp"
 #include "boost/filesystem/path.hpp"
 #include "boost/filesystem.hpp"
-#include <boost/algorithm/string/predicate.hpp>
+#include "boost/format.hpp"
+#include "boost/algorithm/string/predicate.hpp"
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <set>
 #include <sstream>
 #include <string>
 #include <iostream>
 
 extern irods::resource_manager resc_mgr;
-            
+
 static const irods::message_broker::data_type REQ_MSG = {'R', 'E', 'Q'};
 static const irods::message_broker::data_type ACK_MSG = {'A', 'C', 'K'};
 static const irods::message_broker::data_type QUIT_MSG = {'q', 'u', 'i', 't'};
 static const irods::message_broker::data_type PROG_MSG = {'p', 'r', 'o', 'g', 'r', 'e', 's', 's'};
 static const irods::message_broker::data_type FINALIZE_MSG = {'F', 'I', 'N', 'A', 'L', 'I', 'Z', 'E'};
 static const irods::message_broker::data_type ERROR_MSG = {'e', 'r', 'r', 'o', 'r'};
+
+namespace po = boost::program_options;
 
 void print_mp_response(
         const irods::multipart_response& _resp) {
@@ -59,14 +63,14 @@ void print_mp_response(
         std::cout << "file_size: " << p.file_size << std::endl;
         std::cout << "restart_offset: " << p.restart_offset << std::endl;
         std::cout << "original_offset: " << p.original_offset << std::endl;
-        std::cout << "destination_logical_path: " << p.destination_logical_path << std::endl;
+        std::cout << "logical_path: " << p.logical_path << std::endl;
         std::cout << "resource_hierarchy: " << p.resource_hierarchy << std::endl;
     }
 }
 
 
 void multipart_executor_client(
-        irods::api_endpoint*  _endpoint ) {
+        std::shared_ptr<irods::api_endpoint>  _endpoint ) {
     namespace bfs = boost::filesystem;
     typedef irods::message_broker::data_type data_t;
 
@@ -95,7 +99,7 @@ void multipart_executor_client(
 
         // =-=-=-=-=-=-=-
         // stat physical path
-        bfs::path p(mp_req.source_physical_path);
+        bfs::path p(mp_req.file_path);
 
         if(!bfs::exists(p)) {
 #if 0 // TODO - FIXME
@@ -118,7 +122,7 @@ void multipart_executor_client(
         data_t snd_msg(fsz_str.size());
         snd_msg.assign(fsz_str.begin(), fsz_str.end());
         bro.send(snd_msg);
-        
+
         data_t rcv_msg;
         bro.receive(rcv_msg);
         auto in = avro::memoryInputStream(
@@ -129,24 +133,23 @@ void multipart_executor_client(
         irods::multipart_response mp_resp;
         avro::decode( *dec, mp_resp );
 
-        zmq::context_t xport_zmq_ctx(1);
-        irods::api_endpoint* xport_ep_ptr = nullptr;
+        auto xport_ep_ptr = irods::create_command_object(mp_req.transport_mechanism, irods::API_EP_CLIENT);
 
+        zmq::context_t xport_zmq_ctx(1);
         irods::message_broker xport_cmd_skt("ZMQ_REQ", &xport_zmq_ctx);
         xport_cmd_skt.bind("inproc://client_comms");
 
         irods::api_v5_to_v5_call_client<irods::multipart_response>(
             comm,
-            mp_req.operation,
             xport_ep_ptr,
             &xport_zmq_ctx,
-            mp_resp); 
+            mp_resp);
 
         // command and control message loop
         while(true) {
             data_t cli_msg;
             client_cmd_skt.receive(cli_msg, ZMQ_DONTWAIT);
-            if(cli_msg.size()>0) {            
+            if(cli_msg.size()>0) {
                 // forward message from client to transport control
                 //xport_cmd_skt.send(cli_msg);
                 //xport_cmd_skt.receive(rcv_msg); // TODO: process?
@@ -162,8 +165,6 @@ void multipart_executor_client(
                     }
                     client_cmd_skt.send(rcv_msg);
                     break;
-                }
-                else {
                 }
 
                 client_cmd_skt.send(rcv_msg);
@@ -197,39 +198,27 @@ void multipart_executor_client(
 // =-=-=-=-=-=-=-
 // TODO: externalize this to the rule engine
 static std::string make_multipart_collection_name(
-        const std::string& _phy_path,
-        const std::string& _coll_path) {
+        const std::string& _physical_path,
+        const std::string& _logical_path) {
     namespace bfs = boost::filesystem;
 
-    std::string prefix; 
     const std::string vps = irods::get_virtual_path_separator();
-    if( !boost::ends_with(_coll_path, vps)) {
-        prefix += vps;
-    }
-    prefix += ".irods_";
+    std::string coll_path = _logical_path.substr(0, _logical_path.rfind(vps));
 
     // =-=-=-=-=-=-=-
     // build logical collection path for query
-    bfs::path phy_path(_phy_path);
-    return _coll_path + prefix + phy_path.filename().string() + "_multipart" + vps;
+    return coll_path + vps + ".irods_" + bfs::path{_physical_path}.filename().string() + "_multipart" + vps;
 
 } // make_multipart_collection_name
 
 static std::string make_multipart_logical_path(
         const std::string& _phy_path,
-        const std::string& _coll_path) {
+        const std::string& _data_object_path) {
     namespace bfs = boost::filesystem;
 
-    std::string prefix; 
-    const std::string vps = irods::get_virtual_path_separator();
-    if( !boost::ends_with(_coll_path, vps)) {
-        prefix += vps;
-    }
-
-    // =-=-=-=-=-=-=-
-    // build logical collection path for query
-    bfs::path phy_path(_phy_path);
-    return _coll_path + prefix + phy_path.filename().string();
+    return boost::ends_with(_data_object_path, irods::get_virtual_path_separator()) ?
+        _data_object_path + bfs::path{_phy_path}.filename().string() :
+        _data_object_path;
 
 } // make_multipart_logical_path
 
@@ -241,11 +230,9 @@ static bool query_for_restart(
 
     // =-=-=-=-=-=-=-
     // determine if logical collection exists, get obj list
-    std::string query("select DATA_NAME, DATA_PATH, DATA_SIZE, DATA_RESC_ID where COLL_NAME like '");
-    query += _mp_coll + "%'";
+    std::string query{"select DATA_NAME, DATA_PATH, DATA_SIZE, DATA_RESC_ID where COLL_NAME like '" + _mp_coll + "%'"};
 
-    genQueryInp_t gen_inp;
-    memset(&gen_inp, 0, sizeof(gen_inp));
+    genQueryInp_t gen_inp{};
     fillGenQueryInpFromStrCond( (char*)query.c_str(), &gen_inp );
 
     gen_inp.maxRows = MAX_SQL_ROWS;
@@ -267,15 +254,15 @@ static bool query_for_restart(
             return false;
         }
 
-        ret_val = true; 
+        ret_val = true;
         sqlResult_t* name    = getSqlResultByInx( gen_out, COL_DATA_NAME );
         sqlResult_t* path    = getSqlResultByInx( gen_out, COL_D_DATA_PATH );
         sqlResult_t* size    = getSqlResultByInx( gen_out, COL_DATA_SIZE );
         sqlResult_t* resc_id = getSqlResultByInx( gen_out, COL_D_RESC_ID );
         for(auto i = 0; i < gen_out->rowCnt; ++i) {
             irods::part_request pr;
-            pr.destination_logical_path = _mp_coll + &name->value[name->len * i];
-            pr.destination_physical_path = &path->value[name->len * i];
+            pr.logical_path = _mp_coll + &name->value[name->len * i];
+            pr.physical_path = &path->value[name->len * i];
             pr.restart_offset = std::stol(&size->value[size->len * i]);
 
             int id = std::stoi(&resc_id->value[resc_id->len * i]);
@@ -316,7 +303,7 @@ void resolve_part_object_paths(
 
     namespace bfs = boost::filesystem;
 
-    std::string prefix; 
+    std::string prefix;
     const std::string vps = irods::get_virtual_path_separator();
     if( !boost::ends_with(_dst_coll, vps)) {
         prefix += vps;
@@ -326,9 +313,9 @@ void resolve_part_object_paths(
     bfs::path phy_path(_phy_path);
     for(auto& p : _resp.parts) {
         std::stringstream ss; ss << ctr;
-        p.destination_logical_path =
+        p.logical_path =
             _dst_coll +
-            prefix + 
+            prefix +
             phy_path.filename().string() +
             ".irods_part_" +
             ss.str();
@@ -344,20 +331,18 @@ void resolve_part_sizes(
     }
 
     // compute evenly distributed size
-    double even_sz = (double)_src_size/(double)_resp.parts.size();
-
-    // remove fractional portion
-    double trunc_sz = std::trunc(even_sz);
-
-    uint64_t offset = 0;
-    for(auto& p : _resp.parts) {
-        p.file_size       = trunc_sz;
-        p.original_offset = offset;
-        offset += trunc_sz;
-    }
+    uintmax_t even_sz = _src_size / _resp.parts.size();
 
     // compute total fractional portion
-    double frac_sz = (even_sz - trunc_sz)*_resp.parts.size();
+    uintmax_t frac_sz = _src_size % _resp.parts.size();
+
+    uintmax_t offset = 0;
+    for(auto& p : _resp.parts) {
+        p.file_size       = even_sz;
+        p.original_offset = offset;
+        offset += even_sz;
+    }
+
 
     // add fractional portion to last part
     _resp.parts.rbegin()->file_size += frac_sz;
@@ -365,7 +350,7 @@ void resolve_part_sizes(
 } // resolve_part_sizes
 
 void resolve_number_of_threads(
-    const int  _req_num, 
+    const int  _req_num,
     int&       _res_num) {
 
     // TODO: call PEP to externalize decision making
@@ -388,7 +373,7 @@ void resolve_part_hierarchies(
         obj_inp.dataSize = p.file_size;
         rstrcpy(
             obj_inp.objPath,
-            p.destination_logical_path.c_str(),
+            p.logical_path.c_str(),
             MAX_NAME_LEN);
 
         addKeyVal(
@@ -417,7 +402,7 @@ void resolve_part_hierarchies(
             obj_inp.dataSize = p.file_size;
             rstrcpy(
                 obj_inp.objPath,
-                p.destination_logical_path.c_str(),
+                p.logical_path.c_str(),
                 MAX_NAME_LEN);
 
             std::string hier;
@@ -429,7 +414,7 @@ void resolve_part_hierarchies(
             if(!ret.ok()) {
                 THROW(ret.code(), ret.result());
             }
-            
+
             p.resource_hierarchy = hier;
 
         } // for
@@ -501,9 +486,9 @@ std::string make_physical_path(
 void resolve_part_physical_paths(
     irods::multipart_response& _resp) {
     for(auto& p : _resp.parts) {
-        p.destination_physical_path = make_physical_path(
+        p.physical_path = make_physical_path(
                                           p.resource_hierarchy,
-                                          p.destination_logical_path);
+                                          p.logical_path);
     } // for
 } // resolve_part_physical_paths
 
@@ -511,8 +496,7 @@ void create_multipart_collection(
     rsComm_t*          _comm,
     const std::string& _mp_coll) {
 
-    collInp_t coll_inp;
-    memset(&coll_inp, 0, sizeof(coll_inp));
+    collInp_t coll_inp{};
 
     addKeyVal(
         &coll_inp.condInput,
@@ -521,6 +505,12 @@ void create_multipart_collection(
         coll_inp.collName,
         _mp_coll.c_str(),
         MAX_NAME_LEN);
+    if (boost::ends_with(_mp_coll, irods::get_virtual_path_separator())) {
+        for (size_t i = 1; i <= irods::get_virtual_path_separator().size(); i++) {
+            coll_inp.collName[_mp_coll.size() - i] = '\0';
+        }
+    }
+
     int status = rsCollCreate(_comm, &coll_inp);
     if(status < 0) {
         std::string msg("failed to create [");
@@ -545,7 +535,7 @@ void register_part_objects(
         obj_inp.dataSize = p.file_size;
         rstrcpy(
             obj_inp.objPath,
-            p.destination_logical_path.c_str(),
+            p.logical_path.c_str(),
             MAX_NAME_LEN);
         addKeyVal(
             &obj_inp.condInput,
@@ -558,7 +548,7 @@ void register_part_objects(
         int inx = rsDataObjCreate(_comm, &obj_inp);
         if(inx < 0) {
             std::string msg("rsDataObjCreate failed for [");
-            msg += p.destination_logical_path;
+            msg += p.logical_path;
             msg += "]";
             THROW(inx, msg);
         }
@@ -567,7 +557,7 @@ void register_part_objects(
         int status = rsDataObjClose(_comm, &opened_inp);
         if(status < 0) {
             std::string msg("rsDataObjClose failed for [");
-            msg += p.destination_logical_path;
+            msg += p.logical_path;
             msg += "]";
             THROW(inx, msg);
         }
@@ -579,7 +569,7 @@ void register_part_objects(
 #endif
 
 void multipart_executor_server(
-        irods::api_endpoint*  _endpoint ) {
+        std::shared_ptr<irods::api_endpoint>  _endpoint ) {
 #ifdef RODS_SERVER
     typedef irods::message_broker::data_type data_t;
     std::cout << "MULTIPART SERVER" << std::endl;
@@ -605,7 +595,6 @@ void multipart_executor_server(
         bro.receive(rcv_data);
         std::string file_size_string;
         file_size_string.assign(rcv_data.begin(), rcv_data.end());
-        std::cout << "Got file size: " << file_size_string << std::endl;
         uintmax_t file_size = boost::lexical_cast<uintmax_t>(file_size_string);
 
         // =-=-=-=-=-=-=-
@@ -614,22 +603,22 @@ void multipart_executor_server(
         _endpoint->payload<irods::multipart_request>(mp_req);
 
         std::string mp_coll = make_multipart_collection_name(
-                                  mp_req.source_physical_path,
-                                  mp_req.destination_collection);
+                                  mp_req.file_path,
+                                  mp_req.data_object_path);
 
         // =-=-=-=-=-=-=-
         // do we need to restart? - if so find new offsets ( existing sizes ),
         // number of existing parts, logical paths, physical paths, hosts, hiers, etc
         irods::multipart_response mp_resp;
-        mp_resp.source_physical_path = mp_req.source_physical_path;
-        mp_resp.destination_logical_path = make_multipart_logical_path(
-                                               mp_req.source_physical_path,
-                                               mp_req.destination_collection);
+        mp_resp.file_path = mp_req.file_path;
+        mp_resp.data_object_path = make_multipart_logical_path(
+                                               mp_req.file_path,
+                                               mp_req.data_object_path);
 
         bool restart = query_for_restart(comm, mp_coll, mp_resp);
 
         if(restart) {
-            resolve_part_sizes(file_size, mp_resp); 
+            resolve_part_sizes(file_size, mp_resp);
             resolve_part_hostnames(mp_resp);
             resolve_number_of_threads(
                 mp_req.requested_number_of_threads,
@@ -638,12 +627,12 @@ void multipart_executor_server(
             // =-=-=-=-=-=-=-
             // print out mp_resp for debug
             for(auto i : mp_resp.parts) {
-                std::cout << "  hn: " << i.host_name 
+                std::cout << "  hn: " << i.host_name
                           << "  sz: " << i.file_size
                           << "  of: " << i.restart_offset
                           << "  of: " << i.original_offset
-                          << "  dp: " << i.destination_logical_path
-                          << "  pp: " << i.destination_physical_path
+                          << "  dp: " << i.logical_path
+                          << "  pp: " << i.physical_path
                           << "  rh: " << i.resource_hierarchy
                           << std::endl;
             }
@@ -654,18 +643,18 @@ void multipart_executor_server(
             mp_resp.parts.resize(num_parts);
 
             // determine obj paths
-            resolve_part_object_paths(mp_coll, mp_req.source_physical_path, mp_resp); 
+            resolve_part_object_paths(mp_coll, mp_req.file_path, mp_resp);
 
             // 3. resolve part sizes
-            resolve_part_sizes(file_size, mp_resp); 
-            
+            resolve_part_sizes(file_size, mp_resp);
+
             // resolve number of threads
             resolve_number_of_threads(
                 mp_req.requested_number_of_threads,
                 mp_resp.number_of_threads);
 
             // resolve hierarchy for all parts
-            resolve_part_hierarchies(comm, true, mp_req.destination_resource, mp_resp);
+            resolve_part_hierarchies(comm, true, mp_req.resource, mp_resp);
 
             // resolve part hosts
             resolve_part_hostnames(mp_resp);
@@ -682,18 +671,17 @@ void multipart_executor_server(
 
         // =-=-=-=-=-=-=-
         // load and start server-side transport plugin
-        zmq::context_t xport_zmq_ctx(1);
-        irods::api_endpoint* xport_ep_ptr = nullptr;
+        auto xport_ep_ptr = irods::create_command_object(mp_req.transport_mechanism, irods::API_EP_SERVER);
 
+        zmq::context_t xport_zmq_ctx(1);
         irods::message_broker cmd_skt("ZMQ_REQ", &xport_zmq_ctx);
         cmd_skt.bind("inproc://server_comms");
-        
+
         irods::api_v5_to_v5_call_server<irods::multipart_response>(
             comm,
-            mp_req.operation,
             xport_ep_ptr,
             &xport_zmq_ctx,
-            mp_resp); 
+            mp_resp);
 
         // =-=-=-=-=-=-=-
         // wait for response object from client
@@ -738,7 +726,7 @@ void multipart_executor_server(
 } // multipart_executor_server
 
 void multipart_executor_server_to_server(
-        irods::api_endpoint*  _endpoint ) {
+        std::shared_ptr<irods::api_endpoint>  _endpoint ) {
 #ifdef RODS_SERVER
 #endif
 } // multipart_executor_server_to_server
@@ -746,6 +734,9 @@ void multipart_executor_server_to_server(
 
 class multipart_api_endpoint : public irods::api_endpoint {
     public:
+        const std::string PUT_KW{"put"};
+        const std::string GET_KW{"get"};
+
         // =-=-=-=-=-=-=-
         // provide thread executors to the invoke() method
         void capture_executors(
@@ -757,38 +748,101 @@ class multipart_api_endpoint : public irods::api_endpoint {
             _svr_to_svr = multipart_executor_server_to_server;
         }
 
-        multipart_api_endpoint(const std::string& _ctx) :
-            irods::api_endpoint(_ctx) {
+        multipart_api_endpoint(const irods::connection_t _connection_type) :
+            irods::api_endpoint(_connection_type) {
+                name_ = "api_plugin_multipart";
         }
 
         ~multipart_api_endpoint() {
         }
 
+        std::set<std::string> provides() {
+            return { PUT_KW, GET_KW };
+        }
+
+        const std::tuple<std::string, po::options_description, po::positional_options_description>& get_program_options_and_usage(const std::string& command) {
+            static const std::map<std::string, std::tuple<std::string, po::options_description, po::positional_options_description>> options_and_usage_map{
+                {PUT_KW, {
+                        "[OPTION]... source_physical_path destination_logical_path",
+                        []() {
+                                po::options_description desc{"iRODS put"};
+                                desc.add_options()
+                                    ("source_physical_path", po::value<std::string>(), "The path of the file or directory to be put into iRODS")
+                                    ("destination_logical_path", po::value<std::string>(), "The target path of the data object or collection in iRODS")
+                                    ("resource", po::value<std::string>(), "The resource in which to put the data object")
+                                    ("recursive", "Use this option to put a directory and all of its contents in iRODS, preserving the directory structure")
+                                    ("parts", po::value<int>(), "Number of parts to split the file into")
+                                    ("threads", po::value<int>(), "Number of threads to use")
+                                    ;
+                                return desc;
+                            }(),
+                        []() {
+                            po::positional_options_description positional_desc{};
+                            positional_desc.add("source_physical_path", 1);
+                            positional_desc.add("destination_logical_path", 1);
+                            return positional_desc;
+                        }()
+                    }
+                },
+                {GET_KW, {
+                        "[OPTION]... source_logical_path destination_physical_path",
+                        []() {
+                                po::options_description desc{"iRODS get"};
+                                desc.add_options()
+                                    ("source_logical_path", po::value<std::string>(), "The path of the data object or collection to be retrieved from iRODS")
+                                    ("destination_logical_path", po::value<std::string>(), "The destination file or directory")
+                                    ("recursive", "Use this option to retrieve a collection and all of its contents from iRODS, preserving the directory structure")
+                                    ("parts", po::value<int>(), "Number of parts to split the file into")
+                                    ("threads", po::value<int>(), "Number of threads to use")
+                                    ;
+                                return desc;
+                            }(),
+                        []() {
+                            po::positional_options_description positional_desc{};
+                            positional_desc.add("source_logical_path", 1);
+                            positional_desc.add("destination_logical_path", 1);
+                            return positional_desc;
+                        }()
+                    }
+                }
+            };
+            return options_and_usage_map.at(command);
+        }
+
+        irods::multipart_request get_request_from_command_args(const std::string& _subcommand, const std::vector<std::string>& _args) {
+            auto& program_options_and_usage = get_program_options_and_usage(_subcommand);
+            po::variables_map vm;
+            po::store(po::command_line_parser(_args).
+                    options(std::get<po::options_description>(program_options_and_usage)).
+                    positional(std::get<po::positional_options_description>(program_options_and_usage)).
+                    run(), vm);
+            po::notify(vm);
+
+            if (_subcommand == PUT_KW) {
+                irods::multipart_request req{};
+                req.operation = _subcommand;
+                req.transport_mechanism = "api_plugin_unipart";
+                req.file_path = vm["source_physical_path"].as<std::string>();
+                req.data_object_path = vm["destination_logical_path"].as<std::string>();
+                //TODO: make this actually use the environment
+                req.resource = vm.count("resource") ? vm["resource"].as<std::string>() : "demoResc";
+                req.requested_number_of_parts = vm.count("parts") ? vm["parts"].as<int>() : 2;
+                req.requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
+                return req;
+            } else if (_subcommand == GET_KW) {
+                THROW(SYS_NOT_SUPPORTED, "The get operation is not yet supported.");
+            }
+            THROW(SYS_NOT_SUPPORTED, boost::format("Unsupported command: %s") % _subcommand);
+        }
+
         // =-=-=-=-=-=-=-
         // used for client-side initialization
         void init_and_serialize_payload(
+            const std::string&              _subcommand,
             const std::vector<std::string>& _args,
             std::vector<uint8_t>&           _out) {
-            if(_args.size()<8) {
-                std::cerr << "api_plugin_multipart: operation physical_path "
-                          << "logical_path destination_resource number_of_parts" 
-                          << std::endl;
-                // TODO: throw irods exception here
-                return;
-            }
 
-            for( auto i : _args ) {
-                std::cout << "arg["<<i<<"]" << std::endl;
-            }
-
-            //TODO: hit this with boost::program_options
-            irods::multipart_request mp_req;
-            mp_req.operation                 = _args[2];
-            mp_req.source_physical_path      = _args[3];
-            mp_req.destination_collection    = _args[4];
-            mp_req.destination_resource      = _args[5];
-            mp_req.requested_number_of_parts   = atoi(_args[6].c_str());
-            mp_req.requested_number_of_threads = atoi(_args[7].c_str());
+            irods::multipart_request mp_req = get_request_from_command_args(_subcommand, _args);
 
             auto out = avro::memoryOutputStream();
             auto enc = avro::binaryEncoder();
@@ -838,8 +892,8 @@ class multipart_api_endpoint : public irods::api_endpoint {
 extern "C" {
     irods::api_endpoint* plugin_factory(
         const std::string&,     //_inst_name
-        const std::string& _context ) { // _context
-            return new multipart_api_endpoint(_context);
+        const irods::connection_t& _connection_type ) { // _context
+            return new multipart_api_endpoint(_connection_type);
     }
 };
 

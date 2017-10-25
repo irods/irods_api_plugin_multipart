@@ -4,8 +4,8 @@
     "fields" : [
         {"name": "transfer_complete", "type": "boolean"},
         {"name": "file_size", "type": "long"},
-        {"name": "destination_logical_path", "type": "string"},
-        {"name": "destination_physical_path", "type": "string"},
+        {"name": "logical_path", "type": "string"},
+        {"name": "physical_path", "type": "string"},
         {"name": "restart_offset", "type": "long"},
         {"name": "original_offset", "type": "long"},
         {"name": "resource_hierarchy", "type": "string"}

@@ -3,12 +3,12 @@
     "type": "record",
     "fields" : [
         {"name": "operation", "type": "string"},
-        {"name": "source_physical_path", "type": "string"},
-        {"name": "destination_collection", "type": "string"},
-        {"name": "destination_resource", "type": "string"},
+        {"name": "file_path", "type": "string"},
+        {"name": "data_object_path", "type": "string"},
+        {"name": "resource", "type": "string"},
         {"name": "requested_number_of_parts", "type": "int"},
         {"name": "requested_number_of_threads", "type": "int"},
-        {"name": "transport_mechanisims", "type": { "type": "array", "items": "string"} },
+        {"name": "transport_mechanism", "type": { "type": "string"} },
         {
             "name": "access_control_list",
             "type": {
@@ -31,7 +31,7 @@
                     "name": "metadata_entry",
                     "type": "record",
                     "fields": [
-                        {"name": "attrihute", "type": "string"},
+                        {"name": "attribute", "type": "string"},
                         {"name": "value", "type": "string"},
                         {"name": "unit", "type": "string"}
                     ]

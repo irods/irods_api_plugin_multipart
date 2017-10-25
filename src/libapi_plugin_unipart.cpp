@@ -41,6 +41,7 @@ extern irods::resource_manager resc_mgr;
 // stl includes
 #include <sstream>
 #include <string>
+#include <stdexcept>
 #include <iostream>
 #include <future>
 #include <thread>
@@ -56,7 +57,8 @@ void print_mp_response(
 
     std::cout << __FUNCTION__ << ":" << __LINE__ << std::endl;
     std::cout << " number of threads: " << _resp.number_of_threads<< std::endl;
-    std::cout << " number of threads: " << _resp.number_of_threads<< std::endl;
+    std::cout << " data object path: " << _resp.data_object_path<< std::endl;
+    std::cout << " file path: " << _resp.file_path << std::endl;
     for(auto p : _resp.port_list) {
         std::cout << "port: " << p << std::endl;
     }
@@ -66,7 +68,7 @@ void print_mp_response(
         std::cout << "file_size: " << p.file_size << std::endl;
         std::cout << "restart_offset: " << p.restart_offset << std::endl;
         std::cout << "original_offset: " << p.original_offset << std::endl;
-        std::cout << "destination_logical_path: " << p.destination_logical_path << std::endl;
+        std::cout << "logical_path: " << p.logical_path << std::endl;
         std::cout << "resource_hierarchy: " << p.resource_hierarchy << std::endl;
     }
 }
@@ -79,9 +81,9 @@ void transfer_executor_client(
     const std::string                       _cmd_conn_str,
     zmq::context_t*                         _zmq_ctx,
     const std::vector<irods::part_request>& _part_queue) {
-    
+
     typedef irods::message_broker::data_type data_t;
-    
+
     try {
         irods::message_broker cmd_skt("ZMQ_REP", _zmq_ctx);
         cmd_skt.connect(_cmd_conn_str);
@@ -94,7 +96,7 @@ void transfer_executor_client(
             msg += "]";
             THROW(FILE_OPEN_ERR, msg);
         }
-   
+
         irods::message_broker bro("ZMQ_REQ");
         std::stringstream conn_sstr;
         conn_sstr << "tcp://" << _host_name << ":";
@@ -114,15 +116,15 @@ void transfer_executor_client(
                 }
             }*/
 
-            // build a unipart request    
+            // build a unipart request
             irods::unipart_request uni_req;
             uni_req.transfer_complete = false;
             uni_req.file_size = part.file_size;
             uni_req.restart_offset = part.restart_offset;
             uni_req.original_offset = part.original_offset;
             uni_req.resource_hierarchy = part.resource_hierarchy;
-            uni_req.destination_logical_path = part.destination_logical_path;
-            uni_req.destination_physical_path = part.destination_physical_path;
+            uni_req.logical_path = part.logical_path;
+            uni_req.physical_path = part.physical_path;
 
             // offset into the source file for this thread
             off_t offset_value = uni_req.restart_offset+uni_req.original_offset;
@@ -143,7 +145,7 @@ void transfer_executor_client(
             avro::encode( *enc, uni_req );
             auto uni_req_data = avro::snapshot( *out );
 
-            // send request and await response 
+            // send request and await response
             bro.send(*uni_req_data);
 
             data_t ack_rcv_msg;
@@ -152,9 +154,8 @@ void transfer_executor_client(
                 // TODO: process error here
             }
 
-            ssize_t read_size     = block_size;
             ssize_t bytes_to_read = part.file_size;
-            while(bytes_to_read > 0) {
+            do {
                 // handle possible incoming command requests
                 /*data_t cmd_rcv_msg;
                 cmd_skt.receive(cmd_rcv_msg, ZMQ_DONTWAIT);
@@ -171,8 +172,10 @@ void transfer_executor_client(
                 }*/
 
                 // read the data - block size or remainder
-                data_t snd_msg(read_size);
-                ssize_t sz = read(file_desc, snd_msg.data(), read_size);
+                data_t snd_msg(bytes_to_read > block_size ?
+                        block_size :
+                        bytes_to_read);
+                ssize_t sz = read(file_desc, snd_msg.data(), snd_msg.size());
                 if(sz < 0) {
                     std::cerr << "Failed to read with errno: " << errno << std::endl;
                     break;
@@ -180,7 +183,7 @@ void transfer_executor_client(
 
                 // ship the data to the server side
                 bro.send(snd_msg);
-                
+
                 // receive acknowledgement of data
                 data_t ack_rcv_msg;
                 bro.receive(ack_rcv_msg);
@@ -192,10 +195,7 @@ void transfer_executor_client(
 
                 // keep track of blocks read and the remainder
                 bytes_to_read -= sz;
-                if(bytes_to_read < block_size) {
-                    read_size = bytes_to_read;
-                }
-            } // while
+            } while (bytes_to_read > 0);
 
             // if we got a quit while transporting a part, quit gracefully
             /*if(quit_received_flag) {
@@ -240,7 +240,7 @@ void transfer_executor_client(
 } // transfer_executor_client
 
 void unipart_executor_client(
-        irods::api_endpoint*  _endpoint ) {
+        std::shared_ptr<irods::api_endpoint>  _endpoint ) {
     //typedef irods::message_broker::data_type data_t;
     try {
         // open the control channel back to the multipart client executor
@@ -250,7 +250,7 @@ void unipart_executor_client(
         // extract the payload
         irods::multipart_response mp_resp;
         _endpoint->payload<irods::multipart_response>(mp_resp);
-        
+
         // guarantee that all parts have same host_name and resource_hierarchy
         // as all parts route to the one resource for reassembly in this plugin
         for(auto& p : mp_resp.parts) {
@@ -286,12 +286,12 @@ void unipart_executor_client(
             // TODO: pass local context to thread for ipc broker
             threads.emplace_back(std::make_unique<std::thread>(
                 transfer_executor_client,
-                mp_resp.source_physical_path,
+                mp_resp.file_path,
                 mp_resp.port_list[tid],
                 mp_resp.parts.begin()->host_name,
                 conn_sstr.str(),
                 &xport_zmq_ctx,
-                part_queues[tid])); 
+                part_queues[tid]));
         } // for thread id
 
         /*bool quit_received_flag = false;
@@ -448,10 +448,8 @@ void unlink_data_object(
     const std::string& _logical_path,
     const std::string& _resource_hierarchy) {
 
-    dataObjInp_t obj_inp;
-    memset(&obj_inp, 0, sizeof(obj_inp));
+    dataObjInp_t obj_inp{};
 
-    obj_inp.oprType = UNREG_OPR;
     rstrcpy(
         obj_inp.objPath,
         _logical_path.c_str(),
@@ -547,8 +545,7 @@ int64_t stat_part(
               << " n: " << _host_name
               << std::endl;
 
-    fileStatInp_t f_inp;
-    memset( &f_inp, 0, sizeof( f_inp ) );
+    fileStatInp_t f_inp{};
     f_inp.rescId = _resc_id;
     rstrcpy(
         f_inp.fileName,
@@ -600,7 +597,7 @@ bool stat_parts_and_update_catalog(
             }
 
             // fetch the resc id
-            rodsLong_t resc_id = 0; 
+            rodsLong_t resc_id = 0;
             ret = resc->get_property<rodsLong_t>(
                     irods::RESOURCE_ID,
                     resc_id );
@@ -611,8 +608,8 @@ bool stat_parts_and_update_catalog(
             rodsLong_t file_size = stat_part(
                                        _comm,
                                        resc_id,
-                                       p.destination_physical_path,
-                                       p.destination_logical_path,
+                                       p.physical_path,
+                                       p.logical_path,
                                        p.resource_hierarchy,
                                        p.host_name);
             // was the part successfully transferred?
@@ -623,8 +620,8 @@ bool stat_parts_and_update_catalog(
             update_object_size_and_phypath(
                 _comm,
                 file_size,
-                p.destination_physical_path,
-                p.destination_logical_path,
+                p.physical_path,
+                p.logical_path,
                 p.resource_hierarchy);
         } // for
     }
@@ -688,7 +685,7 @@ void reassemble_part_objects(
         }
 
         // fetch the resc id
-        rodsLong_t resc_id = 0; 
+        rodsLong_t resc_id = 0;
         ret = resc->get_property<rodsLong_t>(
                 irods::RESOURCE_ID,
                 resc_id );
@@ -699,11 +696,11 @@ void reassemble_part_objects(
         // use resc hier of first part, as all were repaved the same
         std::string dest_phy_path = make_physical_path(
                                         _mp_resp.parts.begin()->resource_hierarchy,
-                                        _mp_resp.destination_logical_path);
+                                        _mp_resp.data_object_path);
         // build fileobj for dest
         irods::file_object_ptr dst_file_obj( new irods::file_object(
                                    _comm,
-                                   _mp_resp.destination_logical_path,
+                                   _mp_resp.data_object_path,
                                    dest_phy_path,
                                    _mp_resp.parts.begin()->resource_hierarchy,
                                    0, getDefFileMode(), O_WRONLY | O_CREAT));
@@ -719,8 +716,8 @@ void reassemble_part_objects(
             // build fileobj for src part
             irods::file_object_ptr src_file_obj( new irods::file_object(
                                        _comm,
-                                       part.destination_logical_path,
-                                       part.destination_physical_path,
+                                       part.logical_path,
+                                       part.physical_path,
                                        part.resource_hierarchy,
                                        0, getDefFileMode(), O_RDONLY));
 
@@ -776,7 +773,7 @@ void reassemble_part_objects(
             // unlink part here
             unlink_data_object(
                 _comm,
-                part.destination_logical_path,
+                part.logical_path,
                 part.resource_hierarchy);
         } // for
 
@@ -794,7 +791,7 @@ void reassemble_part_objects(
                                    _comm,
                                    resc_id,
                                    dest_phy_path,
-                                   _mp_resp.destination_logical_path,
+                                   _mp_resp.data_object_path,
                                    _mp_resp.parts.begin()->resource_hierarchy,
                                    _mp_resp.parts.begin()->host_name);
         register_data_object(
@@ -802,13 +799,13 @@ void reassemble_part_objects(
             file_size,
             resc_id,
             dest_phy_path,
-            _mp_resp.destination_logical_path,
+            _mp_resp.data_object_path,
             _mp_resp.parts.begin()->resource_hierarchy);
 
         // remove multipart collection
         remove_multipart_collection(
             _comm,
-            _mp_resp.parts.begin()->destination_logical_path);
+            _mp_resp.parts.begin()->logical_path);
     }
     catch(const irods::exception& _e) {
         irods::log(LOG_ERROR, _e.what());
@@ -823,7 +820,7 @@ void transfer_executor_server(
     std::promise<int>* _port_promise) {
 #ifdef RODS_SERVER
     typedef irods::message_broker::data_type data_t;
-    
+
     std::string            part_phy_path;
     irods::unipart_request part_request;
     try {
@@ -837,7 +834,7 @@ void transfer_executor_server(
 
         // bind to a port in the given range to handle the message passing
         int port = bro.bind_to_port_in_range(start_port, end_port);
-        
+
         // set port promise value which notifies the calling thread
         _port_promise->set_value(port);
 
@@ -874,8 +871,8 @@ void transfer_executor_server(
             // create the file object fco
             irods::file_object_ptr file_obj( new irods::file_object(
                                        _comm,
-                                       part_request.destination_logical_path,
-                                       part_request.destination_physical_path,
+                                       part_request.logical_path,
+                                       part_request.physical_path,
                                        part_request.resource_hierarchy,
                                        0, getDefFileMode(), O_WRONLY | O_CREAT));
 
@@ -889,9 +886,8 @@ void transfer_executor_server(
             bro.send(ACK_MSG);
 
             // start writing things down
-            bool done_flag = false;
             int64_t bytes_written = 0;
-            while(!done_flag) {
+            do {
                 data_t rcv_data;
                 bro.receive(rcv_data);
 
@@ -912,10 +908,8 @@ void transfer_executor_server(
 
                 // track number of bytes written
                 bytes_written += rcv_data.size();
-                if(bytes_written >= part_request.file_size) {
-                    done_flag = true;
-                }
-            }// while
+            } while (bytes_written < part_request.file_size);
+
 
             // close object
             resc->call(_comm, irods::RESOURCE_OP_CLOSE, file_obj);
@@ -941,10 +935,10 @@ bool server_executor_impl(
 #ifdef RODS_SERVER
     typedef irods::message_broker::data_type data_t;
 
-    std::vector<std::unique_ptr<std::thread>> threads(_mp_resp.number_of_threads); 
+    std::vector<std::unique_ptr<std::thread>> threads(_mp_resp.number_of_threads);
     std::vector<std::promise<int>>            promises(_mp_resp.number_of_threads);
 
-    // start threads to recieve part data
+    // start threads to receive part data
     for(int tid = 0; tid <_mp_resp.number_of_threads; ++tid) {
         threads[tid] = std::make_unique<std::thread>(
                 transfer_executor_server,
@@ -984,7 +978,7 @@ bool server_executor_impl(
 } // server_executor_impl
 
 void unipart_executor_server(
-        irods::api_endpoint*  _endpoint ) {
+        std::shared_ptr<irods::api_endpoint>  _endpoint ) {
 #ifdef RODS_SERVER
     irods::multipart_response mp_resp;
     try {
@@ -1023,7 +1017,7 @@ void unipart_executor_server(
             std::vector<std::unique_ptr<std::thread>> threads(mp_resp.number_of_threads); 
             std::vector<std::promise<int>>            promises(mp_resp.number_of_threads);
 
-            // start threads to recieve part data
+            // start threads to receive part data
             for(int tid = 0; tid <mp_resp.number_of_threads; ++tid) {
                 threads[tid] = std::make_unique<std::thread>(
                                    transfer_executor_server,
@@ -1078,8 +1072,8 @@ void unipart_executor_server(
             }
 
             irods::api_envelope envelope;
-            envelope.endpoint = "api_plugin_unipart"; // TODO: magic string
-            envelope.connection_type = irods::API_EP_SVR_TO_SVR;
+            envelope.endpoint_name = "api_plugin_unipart"; // TODO: magic string
+            envelope.connection_type = irods::API_EP_SERVER_TO_SERVER;
             envelope.payload.clear();
 
             auto p_out = avro::memoryOutputStream();
@@ -1167,7 +1161,7 @@ void unipart_executor_server(
 } // unipart_executor_server
 
 void unipart_executor_server_to_server(
-        irods::api_endpoint*  _endpoint ) {
+        std::shared_ptr<irods::api_endpoint>  _endpoint ) {
 #ifdef RODS_SERVER
     try {
         irods::message_broker bro("ZMQ_REP");
@@ -1243,8 +1237,17 @@ class unipart_api_endpoint : public irods::api_endpoint {
             _svr_to_svr = unipart_executor_server_to_server;
         }
 
-        unipart_api_endpoint(const std::string& _ctx) :
-            irods::api_endpoint(_ctx) {
+        std::set<std::string> provides() {
+            return {};
+        }
+
+        const std::tuple<std::string, boost::program_options::options_description, boost::program_options::positional_options_description>& get_program_options_and_usage(const std::string&) {
+            throw std::out_of_range("There are no defined subcommands for this plugin");
+        }
+
+        unipart_api_endpoint(const irods::connection_t _connection_type) :
+            irods::api_endpoint(_connection_type) {
+                name_ = "api_plugin_unipart";
         }
 
         ~unipart_api_endpoint() {
@@ -1253,6 +1256,7 @@ class unipart_api_endpoint : public irods::api_endpoint {
         // =-=-=-=-=-=-=-
         // used for client-side initialization
         void init_and_serialize_payload(
+            const std::string&              _subcommand,
             const std::vector<std::string>& _args,
             std::vector<uint8_t>&           _out) {
         }
@@ -1293,8 +1297,8 @@ class unipart_api_endpoint : public irods::api_endpoint {
 extern "C" {
     irods::api_endpoint* plugin_factory(
         const std::string&,//_inst_name
-        const std::string& _context ) {
-            return new unipart_api_endpoint(_context);
+        const irods::connection_t& _context ) {
+        return new unipart_api_endpoint(_context);
     }
 };
 

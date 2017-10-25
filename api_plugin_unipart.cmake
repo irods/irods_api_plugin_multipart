@@ -88,9 +88,3 @@ foreach(PLUGIN ${IRODS_API_PLUGINS})
     DESTINATION usr/lib/irods/plugins/api_v5
     )
 endforeach()
-
-
-
-
-
-

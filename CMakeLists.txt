@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0 FATAL_ERROR) #CPACK_DEBIAN_<COMPONENT>_PACKAGE_NAME
 
-find_package(IRODS 4.2.0 EXACT REQUIRED)
+find_package(IRODS 4.2.2 EXACT REQUIRED)
 
 set(CMAKE_C_COMPILER ${IRODS_EXTERNALS_FULLPATH_CLANG}/bin/clang)
 set(CMAKE_CXX_COMPILER ${IRODS_EXTERNALS_FULLPATH_CLANG}/bin/clang++)
@@ -37,6 +37,7 @@ add_compile_options(-Wno-unneeded-internal-declaration) # Until fix of https://g
 link_libraries(c++abi)
 link_libraries(pthread)
 link_libraries(dl)
+link_libraries(${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_program_options.so )
 
 include_directories(${IRODS_EXTERNALS_FULLPATH_CLANG}/include/c++/v1)
 set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-z,defs")
