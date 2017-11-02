@@ -760,7 +760,7 @@ class multipart_api_endpoint : public irods::api_endpoint {
             return { PUT_KW, GET_KW };
         }
 
-        const std::tuple<std::string, po::options_description, po::positional_options_description>& get_program_options_and_usage(const std::string& command) {
+        const std::tuple<std::string, po::options_description, po::positional_options_description>& get_program_options_and_usage(const std::string& _subcommand) {
             static const std::map<std::string, std::tuple<std::string, po::options_description, po::positional_options_description>> options_and_usage_map{
                 {PUT_KW, {
                         "[OPTION]... source_physical_path destination_logical_path",
@@ -790,7 +790,7 @@ class multipart_api_endpoint : public irods::api_endpoint {
                                 po::options_description desc{"iRODS get"};
                                 desc.add_options()
                                     ("source_logical_path", po::value<std::string>(), "The path of the data object or collection to be retrieved from iRODS")
-                                    ("destination_logical_path", po::value<std::string>(), "The destination file or directory")
+                                    ("destination_physical_path", po::value<std::string>(), "The destination file or directory")
                                     ("recursive", "Use this option to retrieve a collection and all of its contents from iRODS, preserving the directory structure")
                                     ("parts", po::value<int>(), "Number of parts to split the file into")
                                     ("threads", po::value<int>(), "Number of threads to use")
@@ -806,7 +806,7 @@ class multipart_api_endpoint : public irods::api_endpoint {
                     }
                 }
             };
-            return options_and_usage_map.at(command);
+            return options_and_usage_map.at(_subcommand);
         }
 
         irods::multipart_request get_request_from_command_args(const std::string& _subcommand, const std::vector<std::string>& _args) {
@@ -820,7 +820,7 @@ class multipart_api_endpoint : public irods::api_endpoint {
 
             if (_subcommand == PUT_KW) {
                 irods::multipart_request req{};
-                req.operation = _subcommand;
+                req.operation = irods::MULTIPART_PUT;
                 req.transport_mechanism = "api_plugin_unipart";
                 req.file_path = vm["source_physical_path"].as<std::string>();
                 req.data_object_path = vm["destination_logical_path"].as<std::string>();
@@ -830,7 +830,16 @@ class multipart_api_endpoint : public irods::api_endpoint {
                 req.requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
                 return req;
             } else if (_subcommand == GET_KW) {
-                THROW(SYS_NOT_SUPPORTED, "The get operation is not yet supported.");
+                irods::multipart_request req{};
+                req.operation = irods::MULTIPART_GET;
+                req.transport_mechanism = "api_plugin_unipart";
+                req.file_path = vm["destination_physical_path"].as<std::string>();
+                req.data_object_path = vm["source_logical_path"].as<std::string>();
+                //TODO: make this actually use the environment
+                req.resource = vm.count("resource") ? vm["resource"].as<std::string>() : "";
+                req.requested_number_of_parts = vm.count("parts") ? vm["parts"].as<int>() : 2;
+                req.requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
+                return req;
             }
             THROW(SYS_NOT_SUPPORTED, boost::format("Unsupported command: %s") % _subcommand);
         }

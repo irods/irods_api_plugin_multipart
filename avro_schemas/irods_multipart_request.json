@@ -2,7 +2,13 @@
     "name": "multipart_request",
     "type": "record",
     "fields" : [
-        {"name": "operation", "type": "string"},
+        {
+            "name": "operation", "type": {
+                "type": "enum",
+                "name": "multipart_operation_t",
+                "symbols": ["MULTIPART_PUT", "MULTIPART_GET"]
+            }
+        },
         {"name": "file_path", "type": "string"},
         {"name": "data_object_path", "type": "string"},
         {"name": "resource", "type": "string"},
