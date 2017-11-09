@@ -68,12 +68,9 @@ void print_mp_response(
     }
 }
 
-
 void multipart_executor_client(
         std::shared_ptr<irods::api_endpoint>  _endpoint ) {
     namespace bfs = boost::filesystem;
-    typedef irods::message_broker::data_type data_t;
-
 
     try {
         rcComm_t* comm = nullptr;
@@ -104,8 +101,7 @@ void multipart_executor_client(
         if(!bfs::exists(p)) {
 #if 0 // TODO - FIXME
             bro.send(QUIT_MSG);
-            data_t rcv_msg;
-            bro.receive(rcv_msg);
+            const auto = bro.receive();
 #endif
             _endpoint->done(true);
             return;
@@ -119,19 +115,9 @@ void multipart_executor_client(
         std::stringstream fsz_sstr; fsz_sstr << fsz;
         std::string fsz_str = fsz_sstr.str();
 
-        data_t snd_msg(fsz_str.size());
-        snd_msg.assign(fsz_str.begin(), fsz_str.end());
-        bro.send(snd_msg);
+        bro.send(fsz_str);
 
-        data_t rcv_msg;
-        bro.receive(rcv_msg);
-        auto in = avro::memoryInputStream(
-                      &rcv_msg[0],
-                      rcv_msg.size());
-        auto dec = avro::binaryDecoder();
-        dec->init( *in );
-        irods::multipart_response mp_resp;
-        avro::decode( *dec, mp_resp );
+        const auto mp_resp = bro.receive<irods::multipart_response>();
 
         auto xport_ep_ptr = irods::create_command_object(mp_req.transport_mechanism, irods::API_EP_CLIENT);
 
@@ -147,8 +133,7 @@ void multipart_executor_client(
 
         // command and control message loop
         while(true) {
-            data_t cli_msg;
-            client_cmd_skt.receive(cli_msg, ZMQ_DONTWAIT);
+            const auto cli_msg = client_cmd_skt.receive(ZMQ_DONTWAIT);
             if(cli_msg.size()>0) {
                 // forward message from client to transport control
                 //xport_cmd_skt.send(cli_msg);
@@ -157,8 +142,7 @@ void multipart_executor_client(
                 if(QUIT_MSG == cli_msg) {
                     // forward quit from client to multipart instance
                     bro.send(cli_msg);
-                    data_t rcv_msg;
-                    bro.receive(rcv_msg);
+                    const auto rcv_msg = bro.receive();
                     if(ACK_MSG != rcv_msg) {
                         std::cerr << "client thread reported an error: " << rcv_msg << std::endl;
                         // TODO: process response?
@@ -167,7 +151,7 @@ void multipart_executor_client(
                     break;
                 }
 
-                client_cmd_skt.send(rcv_msg);
+                //client_cmd_skt.send(rcv_msg);
             }
         } // while
 
@@ -571,7 +555,6 @@ void register_part_objects(
 void multipart_executor_server(
         std::shared_ptr<irods::api_endpoint>  _endpoint ) {
 #ifdef RODS_SERVER
-    typedef irods::message_broker::data_type data_t;
     std::cout << "MULTIPART SERVER" << std::endl;
 
     try {
@@ -586,13 +569,12 @@ void multipart_executor_server(
                                    irods::CFG_SERVER_PORT_RANGE_START_KW);
         const int  end_port = irods::get_server_property<const int>(
                                   irods::CFG_SERVER_PORT_RANGE_END_KW);
-        int port = bro.bind_to_port_in_range(start_port, end_port);
+        const int port = bro.bind_to_port_in_range(start_port, end_port);
         _endpoint->port(port);
 
         // =-=-=-=-=-=-=-
         // wait for file size from client
-        data_t rcv_data;
-        bro.receive(rcv_data);
+        const auto rcv_data = bro.receive();
         std::string file_size_string;
         file_size_string.assign(rcv_data.begin(), rcv_data.end());
         uintmax_t file_size = boost::lexical_cast<uintmax_t>(file_size_string);
@@ -686,15 +668,13 @@ void multipart_executor_server(
         // =-=-=-=-=-=-=-
         // wait for response object from client
         cmd_skt.send(REQ_MSG);
-        data_t rcv_msg;
-        cmd_skt.receive(rcv_msg);
+        const auto rcv_msg = cmd_skt.receive();
 
         // respond to request from mp client exec
         bro.send(rcv_msg);
 
         // TODO: while message loop here
-        data_t quit_rcv_msg;
-        bro.receive(quit_rcv_msg);
+        const auto quit_rcv_msg = bro.receive();
         bro.send(ACK_MSG);
 
         xport_ep_ptr->wait();

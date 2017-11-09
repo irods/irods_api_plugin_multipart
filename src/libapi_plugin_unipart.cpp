@@ -106,8 +106,8 @@ void transfer_executor_client(
         //bool quit_received_flag      = false;
         const ssize_t block_size = 4*1024*1024; // TODO: parameterize
         for(auto& part : _part_queue) {
-            /*data_t cmd_rcv_msg;
-            cmd_skt.receive(cmd_rcv_msg, ZMQ_DONTWAIT);
+            /*
+            const auto cmd_rcv_msg = cmd_skt.receive(ZMQ_DONTWAIT);
             if(cmd_rcv_msg.size() > 0) {
                 if(QUIT_MSG == cmd_rcv_msg) {
                     cmd_skt.send(ACK_MSG);
@@ -138,18 +138,9 @@ void transfer_executor_client(
                 continue;
             }
 
-            // encode the unipart request
-            auto out = avro::memoryOutputStream();
-            auto enc = avro::binaryEncoder();
-            enc->init( *out );
-            avro::encode( *enc, uni_req );
-            auto uni_req_data = avro::snapshot( *out );
+            bro.send(uni_req);
 
-            // send request and await response
-            bro.send(*uni_req_data);
-
-            data_t ack_rcv_msg;
-            bro.receive(ack_rcv_msg);
+            const auto ack_rcv_msg = bro.receive();
             if(ACK_MSG != ack_rcv_msg) {
                 // TODO: process error here
             }
@@ -157,8 +148,8 @@ void transfer_executor_client(
             ssize_t bytes_to_read = part.file_size;
             do {
                 // handle possible incoming command requests
-                /*data_t cmd_rcv_msg;
-                cmd_skt.receive(cmd_rcv_msg, ZMQ_DONTWAIT);
+                /*
+                const auto cmd_rcv_msg = cmd_skt.receive(ZMQ_DONTWAIT);
                 if(cmd_rcv_msg.size() > 0) {
                     if(QUIT_MSG == cmd_rcv_msg) {
                         cmd_skt.send(ACK_MSG);
@@ -185,10 +176,9 @@ void transfer_executor_client(
                 bro.send(snd_msg);
 
                 // receive acknowledgement of data
-                data_t ack_rcv_msg;
-                bro.receive(ack_rcv_msg);
+                const auto ack_rcv_msg = bro.receive();
                 if(ACK_MSG != ack_rcv_msg) {
-                    std::cerr << "Received error from server: " 
+                    std::cerr << "Received error from server: "
                               << ack_rcv_msg << std::endl;
                     break;
                 }
@@ -211,17 +201,8 @@ void transfer_executor_client(
         irods::unipart_request uni_req;
         uni_req.transfer_complete = true;
 
-        // encode the unipart request
-        auto out = avro::memoryOutputStream();
-        auto enc = avro::binaryEncoder();
-        enc->init( *out );
-        avro::encode( *enc, uni_req );
-        auto data = avro::snapshot( *out );
-
-        // send request and await response 
-        bro.send(*data);
-        data_t rcv_msg;
-        bro.receive(rcv_msg);
+        bro.send(uni_req);
+        const auto rcv_msg = bro.receive();
 
     }
     catch(const zmq::error_t& _e) {
@@ -297,14 +278,12 @@ void unipart_executor_client(
         /*bool quit_received_flag = false;
         // receive and process commands
         while(true) {
-            data_t cli_msg;
-            cmd_skt.receive(cli_msg, ZMQ_DONTWAIT);
+            const auto cli_msg = cmd_skt.receive(ZMQ_DONTWAIT);
 
-            data_t rcv_msg; 
             // forward message from multipart client to transport threads
-            for(auto& skt : xport_skts) { 
+            for(auto& skt : xport_skts) {
                 skt->send(cli_msg);
-                skt->receive(rcv_msg);
+                const auto rcv_msg = skt->receive();
                 // TODO: process results
             }
 
@@ -732,7 +711,7 @@ void reassemble_part_objects(
                 // read from source part
                 const ssize_t block_size = 4 * 1024 * 1024;
                 uint8_t buff[block_size]; // TODO: parameterize
-                ret = resc->call<void*,int>(
+                ret = resc->call<void*,const int>(
                           _comm,
                           irods::RESOURCE_OP_READ,
                           src_file_obj,
@@ -749,7 +728,7 @@ void reassemble_part_objects(
                 }
 
                 // write to dest part
-                ret = resc->call<void*,int>(
+                ret = resc->call<const void*,const int>(
                           _comm,
                           irods::RESOURCE_OP_WRITE,
                           dst_file_obj,
@@ -819,10 +798,7 @@ void transfer_executor_server(
     rsComm_t*          _comm,
     std::promise<int>* _port_promise) {
 #ifdef RODS_SERVER
-    typedef irods::message_broker::data_type data_t;
 
-    std::string            part_phy_path;
-    irods::unipart_request part_request;
     try {
         irods::message_broker bro("ZMQ_REP");
 
@@ -833,22 +809,14 @@ void transfer_executor_server(
                                   irods::CFG_SERVER_PORT_RANGE_END_KW);
 
         // bind to a port in the given range to handle the message passing
-        int port = bro.bind_to_port_in_range(start_port, end_port);
+        const int port = bro.bind_to_port_in_range(start_port, end_port);
 
         // set port promise value which notifies the calling thread
         _port_promise->set_value(port);
 
         while( true ) { // TODO: add timeout?
             // wait for next part request
-            data_t rcv_msg;
-            bro.receive(rcv_msg);
-
-            auto in = avro::memoryInputStream(
-                          &rcv_msg[0],
-                          rcv_msg.size());
-            auto dec = avro::binaryDecoder();
-            dec->init( *in );
-            avro::decode( *dec, part_request );
+            const auto part_request = bro.receive<irods::unipart_request>();
 
             if(part_request.transfer_complete) {
                 bro.send(ACK_MSG);
@@ -888,11 +856,10 @@ void transfer_executor_server(
             // start writing things down
             int64_t bytes_written = 0;
             do {
-                data_t rcv_data;
-                bro.receive(rcv_data);
+                const auto rcv_data = bro.receive();
 
                 // execute a write using the irods framework
-                ret = resc->call<void*,int>(
+                ret = resc->call<const void*,const int>(
                           _comm,
                           irods::RESOURCE_OP_WRITE,
                           file_obj,
@@ -933,7 +900,6 @@ bool server_executor_impl(
     irods::message_broker&     _cmd_skt,
     irods::multipart_response& _mp_resp) {
 #ifdef RODS_SERVER
-    typedef irods::message_broker::data_type data_t;
 
     std::vector<std::unique_ptr<std::thread>> threads(_mp_resp.number_of_threads);
     std::vector<std::promise<int>>            promises(_mp_resp.number_of_threads);
@@ -954,17 +920,10 @@ bool server_executor_impl(
         _mp_resp.port_list.push_back( f.get() );
     }
 
-    data_t rcv_msg;
-    _cmd_skt.receive(rcv_msg);
+    const auto rcv_msg = _cmd_skt.receive();
 
     // respond with the object
-    auto out = avro::memoryOutputStream();
-    auto enc = avro::binaryEncoder();
-    enc->init( *out );
-    avro::encode( *enc, _mp_resp );
-    auto repl_data = avro::snapshot( *out );
-
-    _cmd_skt.send(*repl_data);
+    _cmd_skt.send(_mp_resp);
 
     // wait for all threads to complete
     for( size_t tid = 0; tid < threads.size(); ++tid) {
@@ -1033,17 +992,10 @@ void unipart_executor_server(
                 mp_resp.port_list.push_back( f.get() );
             }
 
-            data_t rcv_msg;
-            cmd_skt.receive(rcv_msg);
+            const auto rcv_msg = cmd_skt.receive();
 
             // respond with the object
-            auto out = avro::memoryOutputStream();
-            auto enc = avro::binaryEncoder();
-            enc->init( *out );
-            avro::encode( *enc, mp_resp );
-            auto repl_data = avro::snapshot( *out );
-
-            cmd_skt.send(*repl_data);
+            cmd_skt.send(mp_resp);
 
             // wait for all threads to complete
             for( size_t tid = 0; tid < threads.size(); ++tid) {
@@ -1116,14 +1068,8 @@ void unipart_executor_server(
                     conn_sstr << portal->portList.portNum;
                     rem_bro.connect(conn_sstr.str());
 
-                    typedef irods::message_broker::data_type data_t;
-                    data_t rcv_msg;
-                    cmd_skt.receive(rcv_msg);
-
-                    rem_bro.send(rcv_msg);
-                    rem_bro.receive(rcv_msg);
-                    
-                    cmd_skt.send(rcv_msg);
+                    rem_bro.send(cmd_skt.receive());
+                    cmd_skt.send(rem_bro.receive());
 
                     rcOprComplete(server_host->conn, 0);
                 }
@@ -1169,7 +1115,7 @@ void unipart_executor_server_to_server(
                                    irods::CFG_SERVER_PORT_RANGE_START_KW);
         const int  end_port = irods::get_server_property<const int>(
                                   irods::CFG_SERVER_PORT_RANGE_END_KW);
-        int port = bro.bind_to_port_in_range(start_port, end_port);
+        const int port = bro.bind_to_port_in_range(start_port, end_port);
         _endpoint->port(port);
 
         irods::multipart_response mp_resp;
