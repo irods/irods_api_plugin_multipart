@@ -3,11 +3,11 @@
     "type": "record",
     "fields" : [
         {"name": "transfer_complete", "type": "boolean"},
-        {"name": "file_size", "type": "long"},
         {"name": "logical_path", "type": "string"},
         {"name": "physical_path", "type": "string"},
-        {"name": "restart_offset", "type": "long"},
-        {"name": "original_offset", "type": "long"},
-        {"name": "resource_hierarchy", "type": "string"}
+        {"name": "resource_hierarchy", "type": "string"},
+        {"name": "start_offset", "type": "long"},
+        {"name": "bytes_to_transfer", "type": "long"},
+        {"name": "part_size", "type": "long"}
     ]
 }

@@ -1,0 +1,136 @@
+[
+    {
+        "type": "record",
+        "name": "socket_address",
+        "fields": [
+            {"name": "host_name", "type": "string"},
+            {"name": "port", "type": "int"}
+        ]
+    },
+    {
+        "type": "record",
+        "name": "socket_address_list",
+        "fields": [
+            {
+                "name": "sockets", "type": {
+                    "type": "array", "items": "socket_address"
+                }
+            }
+        ]
+    },
+    {
+        "type": "record",
+        "name": "part_request",
+        "fields": [
+            {"name": "host_name", "type": "string"},
+            {"name": "logical_path", "type": "string"},
+            {"name": "physical_path", "type": "string"},
+            {"name": "resource_hierarchy", "type": "string"},
+            {"name": "start_offset", "type": "long"},
+            {"name": "bytes_to_transfer", "type": "long"},
+            {"name": "part_size", "type": "long"}
+        ]
+    },
+    {
+        "type": "enum",
+        "name": "multipart_operation_t",
+        "symbols": ["PUT", "GET"]
+    },
+    {
+        "type": "record",
+        "name": "client_multipart_plugin_context",
+        "fields": [
+            {"name": "local_filepath", "type": "string"}
+        ]
+    },
+    {
+        "type": "record",
+        "name": "client_transport_plugin_context",
+        "fields": [
+            {"name": "local_filepath", "type": "string"},
+            {"name": "operation", "type": "multipart_operation_t"},
+            {
+                "name": "port_list", "type": {
+                    "type": "array", "items": "socket_address"
+                }
+            },
+            {
+                "name": "parts", "type": {
+                    "type": "array", "items": "part_request"
+                }
+            }
+        ]
+    },
+    {
+        "type": "record",
+        "name": "server_transport_plugin_context",
+        "fields": [
+            {"name": "number_of_threads", "type": "int"},
+            {"name": "data_object_path", "type": "string"},
+            {"name": "host_name", "type": "string"},
+            {"name": "operation", "type": "multipart_operation_t"},
+            {
+                "name": "parts", "type": {
+                    "type": "array", "items": "part_request"
+                }
+            }
+        ]
+    },
+    {
+        "name": "multipart_request",
+        "type": "record",
+        "fields" : [
+            {"name": "operation", "type": "multipart_operation_t"},
+            {"name": "data_object_path", "type": "string"},
+            {"name": "resource", "type": "string"},
+            {"name": "requested_number_of_parts", "type": "int"},
+            {"name": "requested_number_of_threads", "type": "int"},
+            {"name": "transport_mechanism", "type": { "type": "string"} },
+            {
+                "name": "access_control_list",
+                "type": {
+                    "type": "array",
+                    "items": {
+                        "name": "access_control_entry",
+                        "type": "record",
+                        "fields": [
+                            {"name": "user_or_group", "type": "string"},
+                            {"name": "operation", "type": "string"}
+                        ]
+                    }
+                }
+            },
+            {
+                "name": "metadata",
+                "type": {
+                    "type": "array",
+                    "items": {
+                        "name": "metadata_entry",
+                        "type": "record",
+                        "fields": [
+                            {"name": "attribute", "type": "string"},
+                            {"name": "value", "type": "string"},
+                            {"name": "unit", "type": "string"}
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "multipart_response",
+        "type": "record",
+        "fields": [
+            {
+                "name": "port_list", "type": {
+                    "type": "array", "items": "socket_address"
+                }
+            },
+            {
+                "name": "parts", "type": {
+                    "type": "array", "items": "part_request"
+                }
+            }
+        ]
+    }
+]

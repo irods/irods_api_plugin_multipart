@@ -42,6 +42,7 @@ set(
   )
 
 include(irods_unipart_request.cmake)
+include(irods_multipart_avro.cmake)
 
 foreach(PLUGIN ${IRODS_API_PLUGINS})
   add_library(

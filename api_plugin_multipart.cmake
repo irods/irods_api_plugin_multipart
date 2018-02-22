@@ -41,10 +41,7 @@ set(
   api_plugin_multipart_client
   )
 
-
-include(irods_multipart_response.cmake)
-
-include(irods_multipart_request.cmake)
+include(irods_multipart_avro.cmake)
 
 foreach(PLUGIN ${IRODS_API_PLUGINS})
   add_library(
