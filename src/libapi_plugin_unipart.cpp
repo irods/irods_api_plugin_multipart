@@ -92,12 +92,12 @@ void transfer_executor_client(
     const std::vector<irods::part_request>&    _part_queue,
     const irods::multipart_operation_t         _operation) {
 
-    auto impl = [_operation]() -> std::shared_ptr<multipart_method> {
+    auto impl = [_operation]() -> std::shared_ptr<irods::multipart_method> {
         switch(_operation) {
             case irods::multipart_operation_t::GET:
-                return std::make_shared<get>();
+                return std::make_shared<irods::get>();
             case irods::multipart_operation_t::PUT:
-                return std::make_shared<put>();
+                return std::make_shared<irods::put>();
         }
     }();
 
@@ -749,12 +749,12 @@ void transfer_executor_server(
     irods::multipart_operation_t _operation) {
 #ifdef RODS_SERVER
 
-    auto impl = [_operation]() -> std::shared_ptr<multipart_method> {
+    auto impl = [_operation]() -> std::shared_ptr<irods::multipart_method> {
         switch(_operation) {
             case irods::multipart_operation_t::GET:
-                return std::make_shared<get>();
+                return std::make_shared<irods::get>();
             case irods::multipart_operation_t::PUT:
-                return std::make_shared<put>();
+                return std::make_shared<irods::put>();
         }
     }();
 

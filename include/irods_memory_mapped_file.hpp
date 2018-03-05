@@ -1,6 +1,10 @@
+#ifndef IRODS_MEMORY_MAPPED_FILE_HPP__
+#define IRODS_MEMORY_MAPPED_FILE_HPP__
+
 #include <sys/mman.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <string>
 
 namespace irods {
     enum file_access_t { R, W, RW };
@@ -129,3 +133,5 @@ namespace irods {
             }
     };
 }
+
+#endif // IRODS_MEMORY_MAPPED_FILE_HPP__

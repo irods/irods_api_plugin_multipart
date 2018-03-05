@@ -1,3 +1,6 @@
+#ifndef MULTIPART_API_ENDPOINT_HPP__
+#define MULTIPART_API_ENDPOINT_HPP__
+
 #include "boost/program_options.hpp"
 #include "boost/variant.hpp"
 
@@ -79,3 +82,4 @@ namespace irods {
                 virtual ~multipart_api_server_endpoint() {}
         };
 }
+#endif // MULTIPART_API_ENDPOINT_HPP__

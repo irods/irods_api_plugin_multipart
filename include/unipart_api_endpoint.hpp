@@ -1,3 +1,6 @@
+#ifndef UNIPART_API_ENDPOINT_HPP__
+#define UNIPART_API_ENDPOINT_HPP__
+
 #include <memory>
 
 #include "boost/program_options.hpp"
@@ -69,3 +72,4 @@ namespace irods {
 
         };
 }
+#endif // UNIPART_API_ENDPOINT_HPP__
