@@ -24,7 +24,7 @@
 #include "irods_resource_manager.hpp"
 #include "irods_resource_backport.hpp"
 #include "irods_file_object.hpp"
-#include "irods_memory_mapped_file.hpp"
+#include "irods_local_multipart_file.hpp"
 
 //#include "irods_hostname.hpp"
 bool hostname_resolves_to_local_address(const char* hostname);
@@ -84,13 +84,13 @@ void print_server_context(
 }
 
 void transfer_executor_client(
-    std::shared_ptr<irods::memory_mapped_file> _mmapped_file,
-    const int                                  _port,
-    const std::string&                         _host_name,
-    const std::string                          _cmd_conn_str,
-    zmq::context_t*                            _zmq_ctx,
-    const std::vector<irods::part_request>&    _part_queue,
-    const irods::multipart_operation_t         _operation) {
+    std::shared_ptr<irods::local_multipart_file> _mp_file,
+    const int                                    _port,
+    const std::string&                           _host_name,
+    const std::string                            _cmd_conn_str,
+    zmq::context_t*                              _zmq_ctx,
+    const std::vector<irods::part_request>&      _part_queue,
+    const irods::multipart_operation_t           _operation) {
 
     auto impl = [_operation]() -> std::shared_ptr<irods::multipart_method> {
         switch(_operation) {
@@ -140,7 +140,6 @@ void transfer_executor_client(
                 // TODO: process error here
             }
 
-            const ssize_t block_size = 4 * 1024 * 1024;
             ssize_t bytes_remaining = part.bytes_to_transfer;
             do {
                 // handle possible incoming command requests
@@ -159,7 +158,7 @@ void transfer_executor_client(
                 }*/
 
                 // read the data - block size or remainder
-                bytes_remaining = impl->client_transfer( bro, _mmapped_file, uni_req, bytes_remaining, block_size);
+                bytes_remaining = impl->client_transfer( bro, _mp_file, uni_req, bytes_remaining);
             } while (bytes_remaining > 0);
 
             // if we got a quit while transporting a part, quit gracefully
@@ -202,15 +201,37 @@ void unipart_executor_client(
             p.resource_hierarchy = context.parts.begin()->resource_hierarchy;
         }
 
+        const size_t file_size = [&context]() {
+            size_t acc{0};
+            for (const auto& part : context.parts) {
+                acc += part.part_size;
+            }
+            return acc;
+        }();
+
+        auto mp_file = std::make_shared<irods::local_multipart_file>(
+                context.local_filepath,
+                context.local_filepath, //TODO: make this the data object name
+                0,
+                file_size,
+                context.parts.size(),
+                4 * 1024 * 1024,
+                context.operation);
+
         // TODO: deal parts out in a serial fashion to cluster sequential reads in one thread
         // deal parts out to thread task queues
-        std::vector<std::vector<irods::part_request>> part_queues(context.port_list.size()); 
+        std::vector<std::vector<irods::part_request>> part_queues(context.port_list.size());
         std::vector<std::vector<irods::part_request>>::iterator part_itr = part_queues.begin();
-        size_t file_size{0};
-
-        for(size_t idx = 0; idx < context.parts.size(); ++idx) {
-            file_size += context.parts[idx].part_size;
+        for(size_t idx{0}; idx < context.parts.size(); ++idx) {
             part_itr->push_back(context.parts[idx]);
+            part_itr->back().bytes_to_transfer = mp_file->get_bytes_remaining_for_part(
+                    idx,
+                    part_itr->back().bytes_to_transfer,
+                    context.operation);
+            if (part_itr->back().bytes_to_transfer == 0) {
+                part_itr->pop_back();
+                continue;
+            }
             part_itr++;
             if(part_queues.end() == part_itr) {
                 part_itr = part_queues.begin();
@@ -224,12 +245,6 @@ void unipart_executor_client(
 
         std::vector<std::thread> threads{};
 
-        auto mmap_of_transfer_file = std::make_shared<irods::memory_mapped_file>(
-                context.local_filepath,
-                irods::file_access_t::RW,
-                mode_t{0600},
-                file_size);
-
         for(size_t tid = 0; tid <context.port_list.size(); ++tid) {
             xport_skts.emplace_back(std::make_unique<irods::message_broker>(
                         irods::zmq_type::REQUEST, &xport_zmq_ctx));
@@ -241,7 +256,7 @@ void unipart_executor_client(
             // TODO: pass local context to thread for ipc broker
             threads.emplace_back(
                 transfer_executor_client,
-                mmap_of_transfer_file,
+                mp_file,
                 context.port_list[tid].port,
                 context.port_list[tid].host_name,
                 conn_sstr.str(),
@@ -277,6 +292,7 @@ void unipart_executor_client(
         for( size_t tid = 0; tid < threads.size(); ++tid) {
             threads[tid].join();
         }
+        mp_file->finalize();
     }
     catch(const zmq::error_t& _e) {
         //TODO: notify client of failure
@@ -556,6 +572,7 @@ bool stat_parts_and_update_catalog(
                                        p.resource_hierarchy,
                                        p.host_name);
             // was the part successfully transferred?
+            rodsLog(LOG_NOTICE, "file_size: %ju, part_size: %ju", static_cast<uintmax_t>(file_size), static_cast<uintmax_t>(p.part_size));
             if(file_size != p.part_size) {
                 ret_val = false;
             }
@@ -786,7 +803,7 @@ void transfer_executor_server(
             }
 
             auto bytes_remaining = uni_req.bytes_to_transfer;
-            const ssize_t block_size = 4*1024*1024; // TODO: parameterize
+            const size_t block_size = 4 * 1024 * 1024;
             // start writing things down
             do {
                 bytes_remaining = impl->server_transfer(_comm, bro, uni_req, bytes_remaining, block_size);
@@ -845,13 +862,15 @@ bool server_executor_impl(
     }
 
     // update the catalog?
-    if ( irods::multipart_operation_t::PUT == context.operation ) {
-        return stat_parts_and_update_catalog(_comm, context);
-    } else {
-        return true;
+    switch(context.operation) {
+        case irods::multipart_operation_t::PUT:
+            return stat_parts_and_update_catalog(_comm, context);
+        case irods::multipart_operation_t::GET:
+            return true;
     }
-#endif
+#else
     return false;
+#endif
 } // server_executor_impl
 
 void unipart_executor_server(

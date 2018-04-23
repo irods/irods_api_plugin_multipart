@@ -14,7 +14,7 @@
 #include "irods_log.hpp"
 #include "irods_message_broker.hpp"
 
-#include "irods_memory_mapped_file.hpp"
+#include "irods_local_multipart_file.hpp"
 #include "irods_unipart_request.hpp"
 
 
@@ -28,12 +28,12 @@ static const irods::message_broker::data_type PROG_MSG = {'p', 'r', 'o', 'g', 'r
 namespace irods {
     class multipart_method {
         public:
+        virtual ~multipart_method() {}
         virtual size_t client_transfer(
                 message_broker& _bro,
-                std::shared_ptr<memory_mapped_file> _mmapped_file,
+                std::shared_ptr<local_multipart_file> _mp_file,
                 const unipart_request& _uni_req,
-                const size_t _bytes_remaining,
-                const size_t _block_size) = 0;
+                const size_t _bytes_remaining) = 0;
         virtual void client_cleanup(
                 message_broker& _bro) = 0;
         virtual size_t server_transfer(
@@ -69,14 +69,17 @@ namespace irods {
 
         virtual size_t client_transfer(
                 message_broker& _bro,
-                std::shared_ptr<memory_mapped_file> _mmapped_file,
+                std::shared_ptr<local_multipart_file> _mp_file,
                 const unipart_request& _uni_req,
-                const size_t _bytes_remaining,
-                const size_t _block_size) {
+                const size_t _bytes_remaining) {
 
             //if this is a new part
             if (static_cast<size_t>(_uni_req.bytes_to_transfer) == _bytes_remaining) {
-                offset_ = _uni_req.start_offset;
+                offset_ = _uni_req.start_offset + _uni_req.part_size - _uni_req.bytes_to_transfer;
+                printf( "offset: %ju, part_size: %ju, bytes_to_transfer: %ju\n",
+                        static_cast<uintmax_t>(_uni_req.start_offset),
+                        static_cast<uintmax_t>(_uni_req.part_size),
+                        static_cast<uintmax_t>(_uni_req.bytes_to_transfer));
             }
 
             // read the data - block size or remainder
@@ -89,11 +92,11 @@ namespace irods {
                 nullptr};
                 */
 
-            message_broker::data_type chunk_to_send(_bytes_remaining > _block_size ?
-                    _block_size :
+            message_broker::data_type chunk_to_send(_bytes_remaining > _mp_file->block_size_ ?
+                    _mp_file->block_size_ :
                     _bytes_remaining);
 
-            std::memcpy(chunk_to_send.data(), _mmapped_file->file_pointer(offset_), chunk_to_send.size());
+            _mp_file->read(chunk_to_send.data(), chunk_to_send.size(), offset_);
 
             // ship the data to the server side
             _bro.send(chunk_to_send);
@@ -105,7 +108,7 @@ namespace irods {
                         << server_response << std::endl;
                 THROW(-1, boost::format("Received error from server: %s") % std::string(reinterpret_cast<const char*>(server_response.data()), server_response.size()));
             }
-            offset_ = chunk_to_send.size();
+            offset_ += chunk_to_send.size();
 
             const auto new_bytes_remaining = _bytes_remaining - chunk_to_send.size();
             return new_bytes_remaining;
@@ -138,7 +141,7 @@ namespace irods {
                         _uni_req.physical_path,
                         _uni_req.resource_hierarchy,
                         0, getDefFileMode(),
-                        O_WRONLY | O_CREAT);
+                        O_WRONLY | O_CREAT );
 
                 // open the replica using the irods framework
                 const auto open_err = fileOpen(file_obj_->comm(), file_obj_);
@@ -146,14 +149,21 @@ namespace irods {
                     THROW(open_err.code(), open_err.result());
                 }
 
+                if ( _uni_req.bytes_to_transfer != _uni_req.part_size ) {
+                    const auto lseek_err = fileLseek(file_obj_->comm(), file_obj_, _uni_req.part_size - _uni_req.bytes_to_transfer, SEEK_SET);
+                    if(!lseek_err.ok()) {
+                        THROW(lseek_err.code(), lseek_err.result());
+                    }
+                }
+
             }
 
 
             //TODO: const this and the cast for write in 4.3
-            auto chunk_received = _bro.receive<std::string>();
+            auto chunk_received = _bro.receive();
 
             // execute a write using the irods framework
-            const auto write_err = fileWrite(file_obj_->comm(), file_obj_, const_cast<char*>(chunk_received.data()), chunk_received.size());
+            const auto write_err = fileWrite(file_obj_->comm(), file_obj_, chunk_received.data(), chunk_received.size());
             if(!write_err.ok()) {
                 _bro.send(ERROR_MSG);
                 THROW(write_err.code(), write_err.result());
@@ -208,19 +218,18 @@ namespace irods {
 
         virtual size_t client_transfer(
                 message_broker& _bro,
-                std::shared_ptr<memory_mapped_file> _mmapped_file,
+                std::shared_ptr<local_multipart_file> _mp_file,
                 const unipart_request& _uni_req,
-                const size_t _bytes_remaining,
-                const size_t _block_size) {
+                const size_t _bytes_remaining) {
 
             //if this is a new part
             if (static_cast<size_t>(_uni_req.bytes_to_transfer) == _bytes_remaining) {
-                offset_ = _uni_req.start_offset;
+                offset_ = _uni_req.start_offset + _uni_req.part_size - _uni_req.bytes_to_transfer;
             }
 
             _bro.send(REQ_MSG);
             const auto chunk_received = _bro.receive();
-            std::memcpy(_mmapped_file->file_pointer(offset_), chunk_received.data(), chunk_received.size());
+            _mp_file->write(chunk_received.data(), chunk_received.size(), offset_);
 
             offset_ += chunk_received.size();
 
@@ -264,7 +273,8 @@ namespace irods {
             }
 
             if (static_cast<size_t>(_uni_req.bytes_to_transfer) == _bytes_remaining) {
-                const auto lseek_err = fileLseek(file_obj_->comm(), file_obj_, _uni_req.start_offset, SEEK_SET);
+                const auto restart_offset = _uni_req.start_offset + _uni_req.part_size - _uni_req.bytes_to_transfer;
+                const auto lseek_err = fileLseek(file_obj_->comm(), file_obj_, restart_offset, SEEK_SET);
                 if(!lseek_err.ok()) {
                     THROW(lseek_err.code(), lseek_err.result());
                 }

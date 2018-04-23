@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <string>
+#include <cstdio>
 
 namespace irods {
     enum file_access_t { R, W, RW };
@@ -92,6 +93,7 @@ namespace irods {
 
         public:
             const file_access_t file_access_type_;
+            std::string file_path_;
             const int file_descriptor_;
             const off_t file_size_;
             void * const start_of_file_;
@@ -102,8 +104,9 @@ namespace irods {
                     const mode_t _file_mode,
                     const off_t _file_size = -1) :
                 file_access_type_{_file_access_type},
+                file_path_{_file_path},
                 file_descriptor_{open_file(
-                        _file_path,
+                        file_path_,
                         file_access_type_,
                         _file_mode)},
                 file_size_{resolve_file_size(
@@ -123,14 +126,26 @@ namespace irods {
                 close(file_descriptor_);
             }
 
-            char* file_pointer(const off_t _offset = 0) {
-                return file_pointer<char>(_offset);
-            }
+            char*
+                file_pointer(const off_t _offset = 0) {
+                    return file_pointer<char>(_offset);
+                }
 
             template<typename T>
-            T* file_pointer(const off_t _offset = 0) {
-                return static_cast<T*>(start_of_file_) + _offset;
-            }
+            T*
+                file_pointer(const off_t _offset = 0) {
+                    return static_cast<T*>(start_of_file_) + _offset;
+                }
+
+            void
+                rename(const std::string& _destination_filepath) {
+                    if ( std::rename(file_path_.c_str(), _destination_filepath.c_str()) == -1 ) {
+                        THROW(UNIX_FILE_RENAME_ERR, boost::format("Error occurred during rename of mmapped_file [%s]") % file_path_.c_str());
+                    } else {
+                        file_path_ = _destination_filepath;
+                    }
+                }
+
     };
 }
 

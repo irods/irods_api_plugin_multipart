@@ -117,7 +117,7 @@ void multipart_executor_client(
 
                 // send file size to server
                 // TODO: can we do this without string conversion?
-                uintmax_t fsz = bfs::file_size(p);
+                off_t fsz = bfs::file_size(p);
                 const auto fsz_str = boost::lexical_cast<std::string>(fsz);
                 bro.send(fsz_str);
 
@@ -214,7 +214,7 @@ static std::tuple<std::string, std::string> split_collection_and_object_paths(
 
 // =-=-=-=-=-=-=-
 // TODO: externalize this to the rule engine
-static std::string make_multipart_collection_name(
+static std::string make_multipart_collection_path(
         const std::string& _logical_path) {
 
     std::string coll_path, obj_path;
@@ -222,7 +222,7 @@ static std::string make_multipart_collection_name(
 
     // =-=-=-=-=-=-=-
     // build logical collection path for query
-    const std::string vps = irods::get_virtual_path_separator();
+    const auto& vps = irods::get_virtual_path_separator();
     return coll_path + vps + ".irods_" + obj_path + "_multipart" + vps;
 
 } // make_multipart_collection_name
@@ -235,7 +235,8 @@ static bool query_for_restart(
 
     // =-=-=-=-=-=-=-
     // determine if logical collection exists, get obj list
-    std::string query{"select DATA_NAME, DATA_PATH, DATA_SIZE, DATA_RESC_ID where COLL_NAME like '" + _mp_coll + "%'"};
+    const std::string mp_coll_without_trailing_vps = _mp_coll.substr(0, _mp_coll.size() - irods::get_virtual_path_separator().size());
+    std::string query{"select DATA_NAME, DATA_PATH, DATA_SIZE, DATA_RESC_ID where COLL_NAME like '" + mp_coll_without_trailing_vps + "%'"};
 
     genQueryInp_t gen_inp{};
     fillGenQueryInpFromStrCond( (char*)query.c_str(), &gen_inp );
@@ -245,6 +246,7 @@ static bool query_for_restart(
 
     genQueryOut_t* gen_out = nullptr;
 
+    rodsLog(LOG_NOTICE, "%s", query.c_str());
     // =-=-=-=-=-=-=-
     // if obj list exists, build restart part array objs
     bool continue_flag = true;
@@ -269,6 +271,7 @@ static bool query_for_restart(
             pr.logical_path = _mp_coll + &name->value[name->len * i];
             pr.physical_path = &path->value[name->len * i];
             pr.start_offset = std::stol(&size->value[size->len * i]);
+            rodsLog(LOG_NOTICE, "start offset from reset = %ju", static_cast<uintmax_t>(pr.start_offset));
 
             int id = std::stoi(&resc_id->value[resc_id->len * i]);
             resc_mgr.leaf_id_to_hier( id, pr.resource_hierarchy );
@@ -292,9 +295,13 @@ static bool query_for_restart(
 } // query_for_restart
 
 
-size_t resolve_number_of_parts(size_t _default) {
+size_t resolve_number_of_parts(
+        const size_t _default,
+        const off_t _file_size,
+        const size_t _block_size) {
     // TODO: invoke policy here for num parts
-    return _default;
+    const auto max_parts = _file_size / _block_size + !!(_file_size % _block_size);
+    return std::min(_default, max_parts);
 
 } // resolve_number_of_parts
 
@@ -324,57 +331,34 @@ void resolve_part_object_paths(
         ++part_number;
     }
 } // resolve_part_object_paths
-/*
-void resolve_part_object_paths(
-    const std::string&         _dst_coll,
-    const std::string&         _phy_path,
-    irods::multipart_response& _resp ) {
-    if(_resp.parts.empty()) {
-        THROW(SYS_INVALID_INPUT_PARAM, "empty parts");
-    }
 
-    namespace bfs = boost::filesystem;
-
-    std::string prefix;
-    const std::string vps = irods::get_virtual_path_separator();
-    if( !boost::ends_with(_dst_coll, vps)) {
-        prefix += vps;
-    }
-
-    size_t ctr = 0;
-    bfs::path phy_path(_phy_path);
-    for(auto& p : _resp.parts) {
-        std::stringstream ss; ss << ctr;
-        p.logical_path =
-            _dst_coll +
-            prefix +
-            phy_path.filename().string() +
-            ".irods_part_" +
-            ss.str();
-        ++ctr;
-    }
-} // resolve_part_object_paths
-*/
 void resolve_part_sizes(
-    uintmax_t                  _src_size,
+    off_t                             _src_size,
+    size_t                            _block_size,
     std::vector<irods::part_request>& _parts) {
     if(_parts.empty()) {
         THROW(SYS_INVALID_INPUT_PARAM, "empty parts");
     }
 
-    // compute evenly distributed size
-    const uintmax_t even_sz = _src_size / _parts.size();
-
     // compute total bytes left over
-    uintmax_t leftover_bytes = _src_size % _parts.size();
+    const auto leftover_bytes = _src_size % _block_size;
 
-    uintmax_t offset = 0;
+    //compute total number of blocks to write
+    const auto number_of_blocks = _src_size / _block_size + !!leftover_bytes;
+
+    // compute evenly distributed blocks
+    const auto even_blocks = number_of_blocks / _parts.size();
+
+    // compute number of blocks left over
+    auto leftover_blocks = number_of_blocks % _parts.size();
+
+    off_t offset = 0;
     for(auto& p : _parts) {
-        if ( leftover_bytes != 0 ) {
-            p.part_size = even_sz + 1;
-            leftover_bytes--;
+        if ( leftover_blocks != 0 ) {
+            p.part_size = (even_blocks + 1) * _block_size;
+            leftover_blocks--;
         } else {
-            p.part_size = even_sz;
+            p.part_size = even_blocks * _block_size;
         }
 
         //in case of restart, start_offset is non-zero
@@ -384,13 +368,20 @@ void resolve_part_sizes(
         offset += p.part_size;
     }
 
+    //if there were leftover bytes, the last block is shorter. If there weren't,
+    //the modulus here ensures we subtract zero.
+    const auto last_block_short_by = (_block_size - leftover_bytes) % _block_size;
+    _parts.rbegin()->part_size -= last_block_short_by;
+    _parts.rbegin()->bytes_to_transfer -= last_block_short_by;
+
 } // resolve_part_sizes
 
-int resolve_number_of_threads(
-    const int  _req_num) {
+size_t resolve_number_of_threads(
+    const size_t  _req_num,
+    const size_t _number_of_parts) {
 
     // TODO: call PEP to externalize decision making
-    return _req_num;
+    return std::min(_req_num, _number_of_parts);
 
 } // resolve_number_of_threads
 
@@ -627,17 +618,15 @@ void multipart_executor_server(
 
         const auto& mp_req = multipart_ep_ptr->request();
 
-        irods::server_transport_plugin_context transport_context{};
-        transport_context.number_of_threads = resolve_number_of_threads(
-            mp_req.requested_number_of_threads);
+        const size_t block_size = 4 * 1024 * 1024;
 
         switch (mp_req.operation) {
             case irods::PUT: {
                 // wait for file size from client
                 const auto file_size_string = bro.receive<std::string>();
-                const uintmax_t file_size = boost::lexical_cast<uintmax_t>(file_size_string);
+                const off_t file_size = boost::lexical_cast<off_t>(file_size_string);
 
-                const auto mp_coll = make_multipart_collection_name(
+                const auto mp_coll = make_multipart_collection_path(
                                         mp_req.data_object_path);
 
                 // do we need to restart? - if so find new offsets ( existing sizes ),
@@ -646,7 +635,8 @@ void multipart_executor_server(
                 //const bool restart = false;
 
                 if(!restart) {
-                    size_t num_parts = resolve_number_of_parts(mp_req.requested_number_of_parts);
+                    rodsLog(LOG_NOTICE, "Starting fresh...");
+                    const size_t num_parts = resolve_number_of_parts(mp_req.requested_number_of_parts, file_size, block_size);
                     multipart_ep_ptr->response().parts.resize(num_parts);
 
                     resolve_part_object_paths(mp_coll, multipart_ep_ptr->response());
@@ -657,7 +647,7 @@ void multipart_executor_server(
                     register_part_objects(comm, multipart_ep_ptr->response());
                 }
 
-                resolve_part_sizes(file_size, multipart_ep_ptr->response().parts);
+                resolve_part_sizes(file_size, block_size, multipart_ep_ptr->response().parts);
                 resolve_part_hostnames(multipart_ep_ptr->response());
 
                 break;
@@ -673,31 +663,29 @@ void multipart_executor_server(
                 if ( status < 0 ) {
                     THROW(status, "failed in dataObjStat");
                 }
-                const uintmax_t file_size = stbuf->objSize;
-                //int file_size = 0;
+                const off_t file_size = stbuf->objSize;
 
-                bool restart = false;
+                const size_t num_parts = resolve_number_of_parts(mp_req.requested_number_of_parts, file_size, block_size);
+                multipart_ep_ptr->response().parts.resize(num_parts);
 
-                if(!restart) {
-                    size_t num_parts = resolve_number_of_parts(mp_req.requested_number_of_parts);
-                    multipart_ep_ptr->response().parts.resize(num_parts);
-
-                    for (auto& p : multipart_ep_ptr->response().parts) {
-                        p.logical_path = mp_req.data_object_path;
-                    }
-
-                    resolve_part_hierarchies(comm, true, mp_req.resource, multipart_ep_ptr->response());
-                    resolve_part_physical_paths(multipart_ep_ptr->response());
-
+                for (auto& p : multipart_ep_ptr->response().parts) {
+                    p.logical_path = mp_req.data_object_path;
                 }
 
-                resolve_part_sizes(file_size, multipart_ep_ptr->response().parts);
+                resolve_part_hierarchies(comm, true, mp_req.resource, multipart_ep_ptr->response());
+                resolve_part_physical_paths(multipart_ep_ptr->response());
+
+                resolve_part_sizes(file_size, block_size, multipart_ep_ptr->response().parts);
                 resolve_part_hostnames(multipart_ep_ptr->response());
 
                 const auto rcv_msg = bro.receive();
                 break;
             }
         }
+
+        irods::server_transport_plugin_context transport_context{};
+        transport_context.number_of_threads = resolve_number_of_threads(
+            mp_req.requested_number_of_threads, multipart_ep_ptr->response().parts.size());
 
         transport_context.data_object_path = multipart_ep_ptr->request().data_object_path;
         transport_context.host_name = multipart_ep_ptr->response().parts.begin()->host_name;
