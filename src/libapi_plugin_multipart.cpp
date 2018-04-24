@@ -64,7 +64,7 @@ void print_mp_response(
         std::cout << "physical_path: " << p.physical_path << std::endl;
         std::cout << "resource_hierarchy: " << p.resource_hierarchy << std::endl;
         std::cout << "start_offset: " << p.start_offset << std::endl;
-        std::cout << "bytes_to_transfer: " << p.bytes_to_transfer << std::endl;
+        std::cout << "bytes_already_transferred: " << p.bytes_already_transferred << std::endl;
     }
 }
 
@@ -270,8 +270,8 @@ static bool query_for_restart(
             irods::part_request pr;
             pr.logical_path = _mp_coll + &name->value[name->len * i];
             pr.physical_path = &path->value[name->len * i];
-            pr.start_offset = std::stol(&size->value[size->len * i]);
-            rodsLog(LOG_NOTICE, "start offset from reset = %ju", static_cast<uintmax_t>(pr.start_offset));
+            pr.bytes_already_transferred = std::stol(&size->value[size->len * i]);
+            rodsLog(LOG_NOTICE, "bytes from reset = %ju", static_cast<uintmax_t>(pr.bytes_already_transferred));
 
             int id = std::stoi(&resc_id->value[resc_id->len * i]);
             resc_mgr.leaf_id_to_hier( id, pr.resource_hierarchy );
@@ -361,9 +361,6 @@ void resolve_part_sizes(
             p.part_size = even_blocks * _block_size;
         }
 
-        //in case of restart, start_offset is non-zero
-        p.bytes_to_transfer = p.part_size - p.start_offset;
-
         p.start_offset += offset;
         offset += p.part_size;
     }
@@ -372,7 +369,6 @@ void resolve_part_sizes(
     //the modulus here ensures we subtract zero.
     const auto last_block_short_by = (_block_size - leftover_bytes) % _block_size;
     _parts.rbegin()->part_size -= last_block_short_by;
-    _parts.rbegin()->bytes_to_transfer -= last_block_short_by;
 
 } // resolve_part_sizes
 

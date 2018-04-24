@@ -159,20 +159,18 @@ namespace irods {
                         get_part_progress_offset(data_object_size_));
             }
 
-        off_t
-            get_bytes_remaining_for_part(
+        size_t
+            get_bytes_already_transferred_for_part(
                     const size_t _part_number,
-                    const off_t _bytes_to_transfer,
+                    const size_t _part_size,
+                    const size_t _bytes_already_transferred,
                     const irods::multipart_operation_t _multipart_operation) {
                 switch (_multipart_operation) {
                     case irods::multipart_operation_t::PUT:
-                        return _bytes_to_transfer;
+                        return _bytes_already_transferred;
                     case irods::multipart_operation_t::GET:
-                        const off_t bytes_transferred = get_pointer_to_part_progress()[_part_number] * block_size_;
-                        if (bytes_transferred > _bytes_to_transfer) { //This will happen for the last part if the file does not divide evenly into blocks
-                            return 0;
-                        }
-                        return _bytes_to_transfer - bytes_transferred;
+                        const size_t bytes_already_transferred = get_pointer_to_part_progress()[_part_number] * block_size_;
+                        return std::min(bytes_already_transferred, _part_size);
                 }
             }
 

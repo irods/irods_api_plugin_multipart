@@ -74,12 +74,12 @@ namespace irods {
                 const size_t _bytes_remaining) {
 
             //if this is a new part
-            if (static_cast<size_t>(_uni_req.bytes_to_transfer) == _bytes_remaining) {
-                offset_ = _uni_req.start_offset + _uni_req.part_size - _uni_req.bytes_to_transfer;
-                printf( "offset: %ju, part_size: %ju, bytes_to_transfer: %ju\n",
+            if (static_cast<size_t>(_uni_req.part_size - _uni_req.bytes_already_transferred) == _bytes_remaining) {
+                offset_ = _uni_req.start_offset + _uni_req.bytes_already_transferred;
+                printf( "offset: %ju, part_size: %ju, bytes_already_transferred: %ju\n",
                         static_cast<uintmax_t>(_uni_req.start_offset),
                         static_cast<uintmax_t>(_uni_req.part_size),
-                        static_cast<uintmax_t>(_uni_req.bytes_to_transfer));
+                        static_cast<uintmax_t>(_uni_req.bytes_already_transferred));
             }
 
             // read the data - block size or remainder
@@ -133,7 +133,7 @@ namespace irods {
 
 #ifdef RODS_SERVER
             //if this is a new part
-            if (static_cast<size_t>(_uni_req.bytes_to_transfer) == _bytes_remaining) {
+            if (static_cast<size_t>(_uni_req.part_size - _uni_req.bytes_already_transferred) == _bytes_remaining) {
                 // open the file for write
                 file_obj_ = boost::make_shared<file_object>(
                         _comm,
@@ -149,8 +149,8 @@ namespace irods {
                     THROW(open_err.code(), open_err.result());
                 }
 
-                if ( _uni_req.bytes_to_transfer != _uni_req.part_size ) {
-                    const auto lseek_err = fileLseek(file_obj_->comm(), file_obj_, _uni_req.part_size - _uni_req.bytes_to_transfer, SEEK_SET);
+                if ( _uni_req.bytes_already_transferred ) {
+                    const auto lseek_err = fileLseek(file_obj_->comm(), file_obj_,  _uni_req.bytes_already_transferred, SEEK_SET);
                     if(!lseek_err.ok()) {
                         THROW(lseek_err.code(), lseek_err.result());
                     }
@@ -223,8 +223,8 @@ namespace irods {
                 const size_t _bytes_remaining) {
 
             //if this is a new part
-            if (static_cast<size_t>(_uni_req.bytes_to_transfer) == _bytes_remaining) {
-                offset_ = _uni_req.start_offset + _uni_req.part_size - _uni_req.bytes_to_transfer;
+            if (static_cast<size_t>(_uni_req.part_size - _uni_req.bytes_already_transferred) == _bytes_remaining) {
+                offset_ = _uni_req.start_offset + _uni_req.bytes_already_transferred;
             }
 
             _bro.send(REQ_MSG);
@@ -272,8 +272,8 @@ namespace irods {
 
             }
 
-            if (static_cast<size_t>(_uni_req.bytes_to_transfer) == _bytes_remaining) {
-                const auto restart_offset = _uni_req.start_offset + _uni_req.part_size - _uni_req.bytes_to_transfer;
+            if (static_cast<size_t>(_uni_req.part_size - _uni_req.bytes_already_transferred) == _bytes_remaining) {
+                const auto restart_offset = _uni_req.start_offset + _uni_req.bytes_already_transferred;
                 const auto lseek_err = fileLseek(file_obj_->comm(), file_obj_, restart_offset, SEEK_SET);
                 if(!lseek_err.ok()) {
                     THROW(lseek_err.code(), lseek_err.result());

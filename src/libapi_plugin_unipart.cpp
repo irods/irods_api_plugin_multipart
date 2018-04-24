@@ -62,7 +62,7 @@ void print_client_context(
         std::cout << "physical_path: " << p.physical_path << std::endl;
         std::cout << "resource_hierarchy: " << p.resource_hierarchy << std::endl;
         std::cout << "start_offset: " << p.start_offset << std::endl;
-        std::cout << "bytes_to_transfer: " << p.bytes_to_transfer << std::endl;
+        std::cout << "bytes_already_transferred: " << p.bytes_already_transferred << std::endl;
         std::cout << "file_size: " << p.part_size << std::endl;
     }
 }
@@ -78,7 +78,7 @@ void print_server_context(
         std::cout << "physical_path: " << p.physical_path << std::endl;
         std::cout << "resource_hierarchy: " << p.resource_hierarchy << std::endl;
         std::cout << "start_offset: " << p.start_offset << std::endl;
-        std::cout << "bytes_to_transfer: " << p.bytes_to_transfer << std::endl;
+        std::cout << "bytes_already_transferred: " << p.bytes_already_transferred << std::endl;
         std::cout << "file_size: " << p.part_size << std::endl;
     }
 }
@@ -128,7 +128,7 @@ void transfer_executor_client(
             uni_req.transfer_complete = false;
             uni_req.part_size = part.part_size;
             uni_req.start_offset = part.start_offset;
-            uni_req.bytes_to_transfer = part.bytes_to_transfer;
+            uni_req.bytes_already_transferred = part.bytes_already_transferred;
             uni_req.resource_hierarchy = part.resource_hierarchy;
             uni_req.logical_path = part.logical_path;
             uni_req.physical_path = part.physical_path;
@@ -140,7 +140,7 @@ void transfer_executor_client(
                 // TODO: process error here
             }
 
-            ssize_t bytes_remaining = part.bytes_to_transfer;
+            ssize_t bytes_remaining = part.part_size - part.bytes_already_transferred;
             do {
                 // handle possible incoming command requests
                 /*
@@ -224,11 +224,12 @@ void unipart_executor_client(
         std::vector<std::vector<irods::part_request>>::iterator part_itr = part_queues.begin();
         for(size_t idx{0}; idx < context.parts.size(); ++idx) {
             part_itr->push_back(context.parts[idx]);
-            part_itr->back().bytes_to_transfer = mp_file->get_bytes_remaining_for_part(
+            part_itr->back().bytes_already_transferred = mp_file->get_bytes_already_transferred_for_part(
                     idx,
-                    part_itr->back().bytes_to_transfer,
+                    part_itr->back().part_size,
+                    part_itr->back().bytes_already_transferred,
                     context.operation);
-            if (part_itr->back().bytes_to_transfer == 0) {
+            if (part_itr->back().bytes_already_transferred == part_itr->back().part_size) {
                 part_itr->pop_back();
                 continue;
             }
@@ -802,7 +803,7 @@ void transfer_executor_server(
                 break;
             }
 
-            auto bytes_remaining = uni_req.bytes_to_transfer;
+            ssize_t bytes_remaining = uni_req.part_size - uni_req.bytes_already_transferred;
             const size_t block_size = 4 * 1024 * 1024;
             // start writing things down
             do {
