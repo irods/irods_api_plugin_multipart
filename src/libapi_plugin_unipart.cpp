@@ -32,7 +32,6 @@ extern irods::resource_manager resc_mgr;
 
 #include "irods_multipart_avro_types.hpp"
 #include "irods_unipart_request.hpp"
-#include "irods_unipart_request.hpp"
 #include "data_transfer.hpp"
 #include "unipart_api_endpoint.hpp"
 
@@ -892,45 +891,10 @@ void unipart_executor_server(
         const auto& context = unipart_server_ep_ptr->context();
         const std::string& host_name = context.host_name;
         if(hostname_resolves_to_local_address(host_name.c_str())) {
-#if 1
             if(server_executor_impl(comm, cmd_skt, unipart_server_ep_ptr) && irods::multipart_operation_t::PUT == context.operation) {
                 reassemble_part_objects(comm, context);
             }
-#else
-            std::vector<std::unique_ptr<std::thread>> threads(mp_resp.number_of_threads); 
-            std::vector<std::promise<int>>            promises(mp_resp.number_of_threads);
-
-            // start threads to receive part data
-            for(int tid = 0; tid <mp_resp.number_of_threads; ++tid) {
-                threads[tid] = std::make_unique<std::thread>(
-                                   transfer_executor_server,
-                                   comm,
-                                   &promises[tid]);
-            }
-            
-            // wait until all ports are bound and fill in
-            // the ports in the response object
-            for( size_t pid = 0; pid < promises.size(); ++pid) {
-                auto f = promises[pid].get_future();
-                f.wait();
-                mp_resp.port_list.push_back( f.get() );
-            }
-
-            const auto rcv_msg = cmd_skt.receive();
-
-            // respond with the object
-            cmd_skt.send(mp_resp);
-
-            // wait for all threads to complete
-            for( size_t tid = 0; tid < threads.size(); ++tid) {
-                threads[tid]->join();
-            }
-
-            // update the catalog?
-            xfer_complete = stat_parts_and_update_catalog(comm, mp_resp);
-#endif
-        }
-        else {
+        } else {
             // redirect, we are not the correct server
             int remote_flag = 0;
             rodsServerHost_t* server_host = nullptr; 

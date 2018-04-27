@@ -45,7 +45,8 @@ namespace irods {
 
     class unipart_api_client_endpoint :
         public virtual unipart_api_endpoint,
-        public virtual with_context<client_transport_plugin_context> {
+        public virtual with_context<client_transport_plugin_context>,
+        public virtual without_api_request {
             public:
                 unipart_api_client_endpoint(
                         const connection_t _connection_type ) :
@@ -59,7 +60,8 @@ namespace irods {
         };
     class unipart_api_server_endpoint :
         public virtual unipart_api_endpoint,
-        public virtual with_context<server_transport_plugin_context> {
+        public virtual with_context<server_transport_plugin_context>,
+        public virtual with_api_request_as_context {
             public:
                 unipart_api_server_endpoint(
                         const connection_t _connection_type ) :

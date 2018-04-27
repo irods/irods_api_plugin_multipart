@@ -46,7 +46,8 @@ namespace irods {
 
     class multipart_api_client_endpoint :
         public virtual multipart_api_endpoint,
-        public virtual with_context<client_multipart_plugin_context> {
+        public virtual with_context<client_multipart_plugin_context>,
+        public virtual without_api_request {
             public:
                 multipart_api_client_endpoint(
                         const connection_t _connection_type) :
@@ -72,7 +73,8 @@ namespace irods {
     class multipart_api_server_endpoint :
         public virtual multipart_api_endpoint,
         public virtual without_context,
-        public virtual with_cli_disabled {
+        public virtual with_cli_disabled,
+        public virtual with_api_request_as_request {
             public:
                 multipart_api_server_endpoint(
                         const connection_t _connection_type) :
