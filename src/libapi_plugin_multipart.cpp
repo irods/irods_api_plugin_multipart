@@ -381,7 +381,7 @@ size_t resolve_number_of_threads(
 
 } // resolve_number_of_threads
 
-void resolve_part_hierarchies(
+void resolve_part_hierarchies_for_put(
     rsComm_t*                  _comm,
     bool                       _single_server,
     const std::string&         _dst_resc,
@@ -400,9 +400,9 @@ void resolve_part_hierarchies(
             MAX_NAME_LEN);
 
         addKeyVal(
-            &obj_inp.condInput,
-            RESC_NAME_KW,
-            _dst_resc.c_str());
+                &obj_inp.condInput,
+                RESC_NAME_KW,
+                _dst_resc.c_str());
 
         std::string hier;
         irods::error ret = irods::resolve_resource_hierarchy(
@@ -442,7 +442,69 @@ void resolve_part_hierarchies(
 
         } // for
     }
-} // resolve_part_hierarchies
+} // resolve_part_hierarchies_for_put
+
+void resolve_part_hierarchies_for_get(
+    rsComm_t*                  _comm,
+    const bool                 _single_server,
+    const std::string&         _data_object_path,
+    const std::string&         _dst_resc,
+    irods::multipart_response& _resp) {
+
+    if(_single_server) {
+        dataObjInp_t obj_inp{};
+
+        obj_inp.oprType = GET_OPR;
+
+        rstrcpy(obj_inp.objPath, _data_object_path.c_str(), sizeof(obj_inp.objPath));
+
+        addKeyVal(
+            &obj_inp.condInput,
+            RESC_NAME_KW,
+            _dst_resc.c_str());
+
+        std::string hier;
+        irods::error ret = irods::resolve_resource_hierarchy(
+                               irods::OPEN_OPERATION,
+                               _comm,
+                               &obj_inp,
+                               hier );
+        if(!ret.ok()) {
+            THROW(ret.code(), ret.result());
+        }
+
+        for(auto& p : _resp.parts) {
+            p.resource_hierarchy = hier;
+        } // for
+    }
+    else {
+        for(auto& p : _resp.parts) {
+            dataObjInp_t obj_inp{};
+
+            obj_inp.oprType = GET_OPR;
+
+            rstrcpy(obj_inp.objPath, _data_object_path.c_str(), sizeof(obj_inp.objPath));
+
+            addKeyVal(
+                &obj_inp.condInput,
+                RESC_NAME_KW,
+                _dst_resc.c_str());
+
+            std::string hier;
+            irods::error ret = irods::resolve_resource_hierarchy(
+                                   irods::OPEN_OPERATION,
+                                   _comm,
+                                   &obj_inp,
+                                   hier );
+            if(!ret.ok()) {
+                THROW(ret.code(), ret.result());
+            }
+
+            p.resource_hierarchy = hier;
+
+        } // for
+    }
+} // resolve_part_hierarchies_for_get
 
 void resolve_part_hostnames(
     irods::multipart_response& _resp) {
@@ -636,7 +698,7 @@ void multipart_executor_server(
                     multipart_ep_ptr->response().parts.resize(num_parts);
 
                     resolve_part_object_paths(mp_coll, multipart_ep_ptr->response());
-                    resolve_part_hierarchies(comm, true, mp_req.resource, multipart_ep_ptr->response());
+                    resolve_part_hierarchies_for_put(comm, true, mp_req.resource, multipart_ep_ptr->response());
                     resolve_part_physical_paths(multipart_ep_ptr->response());
 
                     create_multipart_collection(comm, mp_coll);
@@ -668,7 +730,7 @@ void multipart_executor_server(
                     p.logical_path = mp_req.data_object_path;
                 }
 
-                resolve_part_hierarchies(comm, true, mp_req.resource, multipart_ep_ptr->response());
+                resolve_part_hierarchies_for_get(comm, true, mp_req.data_object_path, mp_req.resource, multipart_ep_ptr->response());
                 resolve_part_physical_paths(multipart_ep_ptr->response());
 
                 resolve_part_sizes(file_size, block_size, multipart_ep_ptr->response().parts);
@@ -799,6 +861,7 @@ const std::tuple<std::string, po::options_description, po::positional_options_de
                         desc.add_options()
                             ("source_logical_path", po::value<std::string>(), "The path of the data object or collection to be retrieved from iRODS")
                             ("destination_physical_path", po::value<std::string>(), "The destination file or directory")
+                            ("resource", po::value<std::string>(), "The resource from which to get the data object")
                             ("recursive", "Use this option to retrieve a collection and all of its contents from iRODS, preserving the directory structure")
                             ("parts", po::value<int>(), "Number of parts to split the file into")
                             ("threads", po::value<int>(), "Number of threads to use")
@@ -844,7 +907,7 @@ void irods::multipart_api_client_endpoint::initialize_from_command(
         context().local_filepath = vm["destination_physical_path"].as<std::string>();
         request().data_object_path = vm["source_logical_path"].as<std::string>();
         //TODO: make this actually use the environment
-        request().resource = vm.count("resource") ? vm["resource"].as<std::string>() : "";
+        request().resource = vm.count("resource") ? vm["resource"].as<std::string>() : "demoResc";
         request().requested_number_of_parts = vm.count("parts") ? vm["parts"].as<int>() : 2;
         request().requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
     } else {
