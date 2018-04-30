@@ -205,8 +205,6 @@ namespace irods {
                             get_pointer_to_part_progress(),
                             get_pointer_to_part_progress() + number_of_parts_,
                             size_t{0});
-                    std::cout << "blocks written:   " << blocks_written << std::endl <<
-                                 "number of blocks: " << number_of_blocks_ << std::endl;
                     if (number_of_blocks_ == blocks_written) {
                         ftruncate(file_->file_descriptor_, data_object_size_);
                         file_->rename(local_filename_);

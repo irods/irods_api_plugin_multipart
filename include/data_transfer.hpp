@@ -76,10 +76,6 @@ namespace irods {
             //if this is a new part
             if (static_cast<size_t>(_uni_req.part_size - _uni_req.bytes_already_transferred) == _bytes_remaining) {
                 offset_ = _uni_req.start_offset + _uni_req.bytes_already_transferred;
-                printf( "offset: %ju, part_size: %ju, bytes_already_transferred: %ju\n",
-                        static_cast<uintmax_t>(_uni_req.start_offset),
-                        static_cast<uintmax_t>(_uni_req.part_size),
-                        static_cast<uintmax_t>(_uni_req.bytes_already_transferred));
             }
 
             // read the data - block size or remainder
