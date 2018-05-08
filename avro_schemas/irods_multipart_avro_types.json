@@ -47,6 +47,8 @@
         "type": "record",
         "name": "client_transport_plugin_context",
         "fields": [
+            {"name": "timeout", "type": "int"},
+            {"name": "retries", "type": "int"},
             {"name": "local_filepath", "type": "string"},
             {"name": "operation", "type": "multipart_operation_t"},
             {
@@ -65,6 +67,8 @@
         "type": "record",
         "name": "server_transport_plugin_context",
         "fields": [
+            {"name": "timeout", "type": "int"},
+            {"name": "retries", "type": "int"},
             {"name": "number_of_threads", "type": "int"},
             {"name": "data_object_path", "type": "string"},
             {"name": "host_name", "type": "string"},
@@ -85,6 +89,8 @@
             {"name": "resource", "type": "string"},
             {"name": "requested_number_of_parts", "type": "int"},
             {"name": "requested_number_of_threads", "type": "int"},
+            {"name": "timeout", "type": "int"},
+            {"name": "retries", "type": "int"},
             {"name": "transport_mechanism", "type": { "type": "string"} },
             {
                 "name": "access_control_list",

@@ -64,7 +64,7 @@ namespace irods {
                     _number_of_parts * sizeof(off_t);
             }
 
-        std::unique_ptr<memory_mapped_file>
+        static std::unique_ptr<memory_mapped_file>
             get_file_pointer(
                     const std::string& _local_filename,
                     const std::string& _data_object_name,
@@ -85,8 +85,8 @@ namespace irods {
                                     file_access_t::RW,
                                     mode_t{0600},
                                     get_size_for_in_progress_multipart_file(
-                                        data_object_size_,
-                                        number_of_parts_));
+                                        _data_object_size,
+                                        _number_of_parts));
                         case irods::multipart_operation_t::PUT:
                             return std::make_unique<memory_mapped_file>(
                                     _local_filename,

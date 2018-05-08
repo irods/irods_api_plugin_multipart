@@ -84,15 +84,15 @@ void print_server_context(
 
 void transfer_executor_client(
     std::shared_ptr<irods::local_multipart_file> _mp_file,
-    const int                                    _port,
-    const std::string&                           _host_name,
-    const std::string                            _cmd_conn_str,
-    zmq::context_t*                              _zmq_ctx,
-    const std::vector<irods::part_request>&      _part_queue,
-    const irods::multipart_operation_t           _operation) {
+    const int                                     _port,
+    const std::string&                            _host_name,
+    const std::string                             _cmd_conn_str,
+    zmq::context_t*                               _zmq_ctx,
+    const std::vector<irods::part_request>&       _part_queue,
+    const irods::client_transport_plugin_context& _context) {
 
-    auto impl = [_operation]() -> std::shared_ptr<irods::multipart_method> {
-        switch(_operation) {
+    auto impl = [&_context]() -> std::shared_ptr<irods::multipart_method> {
+        switch(_context.operation) {
             case irods::multipart_operation_t::GET:
                 return std::make_shared<irods::get>();
             case irods::multipart_operation_t::PUT:
@@ -101,10 +101,10 @@ void transfer_executor_client(
     }();
 
     try {
-        irods::message_broker cmd_skt(irods::zmq_type::RESPONSE, _zmq_ctx);
+        irods::message_broker cmd_skt{irods::zmq_type::RESPONSE, {}, _zmq_ctx};
         cmd_skt.connect(_cmd_conn_str);
 
-        irods::message_broker bro(irods::zmq_type::REQUEST);
+        irods::message_broker bro{irods::zmq_type::REQUEST, {.timeout = _context.timeout, .retries = _context.retries}};
         std::stringstream conn_sstr;
         conn_sstr << "tcp://" << _host_name << ":";
         conn_sstr << _port;
@@ -188,11 +188,12 @@ void unipart_executor_client(
         std::shared_ptr<irods::api_endpoint>  _ep_ptr ) {
     auto unipart_client_ep_ptr = std::dynamic_pointer_cast<irods::unipart_api_client_endpoint>(_ep_ptr);
     try {
+        const auto& context = unipart_client_ep_ptr->context();
+
         // open the control channel back to the multipart client executor
-        irods::message_broker cmd_skt(irods::zmq_type::RESPONSE, unipart_client_ep_ptr->ctrl_ctx());
+        irods::message_broker cmd_skt{irods::zmq_type::RESPONSE, {}, unipart_client_ep_ptr->ctrl_ctx()};
         cmd_skt.connect("inproc://client_comms");
 
-        const auto& context = unipart_client_ep_ptr->context();
         // guarantee that all parts have same host_name and resource_hierarchy
         // as all parts route to the one resource for reassembly in this plugin
         for(auto& p : unipart_client_ep_ptr->context().parts) {
@@ -245,9 +246,10 @@ void unipart_executor_client(
 
         std::vector<std::thread> threads{};
 
+        const irods::broker_settings settings{};
         for(size_t tid = 0; tid <context.port_list.size(); ++tid) {
             xport_skts.emplace_back(std::make_unique<irods::message_broker>(
-                        irods::zmq_type::REQUEST, &xport_zmq_ctx));
+                        irods::zmq_type::REQUEST, settings, &xport_zmq_ctx));
             std::stringstream conn_sstr;
             conn_sstr << "inproc://xport_client_to_executors_";
             conn_sstr << tid;
@@ -262,7 +264,7 @@ void unipart_executor_client(
                 conn_sstr.str(),
                 &xport_zmq_ctx,
                 part_queues[tid],
-                context.operation);
+                context);
         } // for thread id
 
         /*bool quit_received_flag = false;
@@ -761,13 +763,13 @@ void reassemble_part_objects(
 #endif
 
 void transfer_executor_server(
-    rsComm_t*          _comm,
-    std::promise<int>* _port_promise,
-    irods::multipart_operation_t _operation) {
+    rsComm_t*                                     _comm,
+    std::promise<int>*                            _port_promise,
+    const irods::server_transport_plugin_context& _context) {
 #ifdef RODS_SERVER
 
-    auto impl = [_operation]() -> std::shared_ptr<irods::multipart_method> {
-        switch(_operation) {
+    auto impl = [&_context]() -> std::shared_ptr<irods::multipart_method> {
+        switch(_context.operation) {
             case irods::multipart_operation_t::GET:
                 return std::make_shared<irods::get>();
             case irods::multipart_operation_t::PUT:
@@ -776,7 +778,7 @@ void transfer_executor_server(
     }();
 
     try {
-        irods::message_broker bro(irods::zmq_type::RESPONSE);
+        irods::message_broker bro{irods::zmq_type::RESPONSE, {.timeout = _context.timeout, .retries = _context.retries}};
 
         // get the port range from server configuration
         const int start_port = irods::get_server_property<const int>(
@@ -837,7 +839,7 @@ bool server_executor_impl(
                 transfer_executor_server,
                 _comm,
                 &promises[tid],
-                context.operation);
+                context);
     }
 
     // wait until all ports are bound and fill in
@@ -882,13 +884,13 @@ void unipart_executor_server(
             THROW(SYS_INVALID_INPUT_PARAM, "invalid number of threads");
         }
 
+        const auto& context = unipart_server_ep_ptr->context();
         auto comm = unipart_server_ep_ptr->comm<rsComm_t*>();
 
         // open the control channel back to the multipart server executor
-        irods::message_broker cmd_skt(irods::zmq_type::RESPONSE, unipart_server_ep_ptr->ctrl_ctx());
+        irods::message_broker cmd_skt(irods::zmq_type::RESPONSE, {}, unipart_server_ep_ptr->ctrl_ctx());
         cmd_skt.connect("inproc://server_comms");
 
-        const auto& context = unipart_server_ep_ptr->context();
         const std::string& host_name = context.host_name;
         if(hostname_resolves_to_local_address(host_name.c_str())) {
             if(server_executor_impl(comm, cmd_skt, unipart_server_ep_ptr) && irods::multipart_operation_t::PUT == context.operation) {
@@ -897,7 +899,7 @@ void unipart_executor_server(
         } else {
             // redirect, we are not the correct server
             int remote_flag = 0;
-            rodsServerHost_t* server_host = nullptr; 
+            rodsServerHost_t* server_host = nullptr;
             irods::error ret = irods::get_host_for_hier_string(
                                    context.parts.begin()->resource_hierarchy,
                                    remote_flag,
@@ -905,7 +907,7 @@ void unipart_executor_server(
             if(!ret.ok()) {
                 THROW(ret.code(), ret.result());
             }
-            
+
             int status = svrToSvrConnect(comm, server_host);
             if(status < 0) {
                 THROW(status, "svrToSvrConnect failed for ");
@@ -924,7 +926,7 @@ void unipart_executor_server(
 
             envelope.payload.resize(p_data->size());
             envelope.payload.assign(p_data->begin(), p_data->end());
-            
+
             auto e_out = avro::memoryOutputStream();
             auto e_enc = avro::binaryEncoder();
             e_enc->init( *e_out );
@@ -948,9 +950,9 @@ void unipart_executor_server(
                 if ( tmp_out != NULL ) {
                     portalOprOut_t* portal = static_cast<portalOprOut_t*>( tmp_out );
 
-                   // TODO: we need to bridge the server_comms inproc socket to the 
-                   // remote socket we are creating here 
-                    irods::message_broker rem_bro(irods::zmq_type::REQUEST);
+                   // TODO: we need to bridge the server_comms inproc socket to the
+                   // remote socket we are creating here
+                    irods::message_broker rem_bro{irods::zmq_type::REQUEST, {.timeout = context.timeout, .retries = context.retries}};
                     std::stringstream conn_sstr;
                     conn_sstr << "tcp://" << context.parts.begin()->host_name << ":";
                     conn_sstr << portal->portList.portNum;
@@ -996,7 +998,9 @@ void unipart_executor_server_to_server(
     auto unipart_server_ep_ptr = std::dynamic_pointer_cast<irods::unipart_api_server_endpoint>(_ep_ptr);
 #ifdef RODS_SERVER
     try {
-        irods::message_broker bro(irods::zmq_type::RESPONSE);
+        const auto& context = unipart_server_ep_ptr->context();
+
+        irods::message_broker bro{irods::zmq_type::RESPONSE, {.timeout = context.timeout, .retries = context.retries}};
         const int start_port = irods::get_server_property<const int>(
                                    irods::CFG_SERVER_PORT_RANGE_START_KW);
         const int  end_port = irods::get_server_property<const int>(
@@ -1004,7 +1008,6 @@ void unipart_executor_server_to_server(
         const int port = bro.bind_to_port_in_range(start_port, end_port);
         unipart_server_ep_ptr->port(port);
 
-        const auto& context = unipart_server_ep_ptr->context();
         if(context.parts.empty()) {
             THROW(SYS_INVALID_INPUT_PARAM, "empty parts array");
         }

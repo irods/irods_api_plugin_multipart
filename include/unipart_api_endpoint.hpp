@@ -17,7 +17,6 @@ namespace irods {
         public virtual with_cli_disabled,
         public virtual without_context_initialization {
             public:
-                std::shared_ptr<message_broker> inherited_broker_;
 
                 unipart_api_endpoint(
                         const connection_t _connection_type) :

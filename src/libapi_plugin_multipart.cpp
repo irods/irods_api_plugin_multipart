@@ -87,20 +87,20 @@ void multipart_executor_client(
     try {
         rcComm_t* comm = multipart_ep_ptr->comm<rcComm_t*>();
 
-        irods::message_broker client_cmd_skt(irods::zmq_type::RESPONSE, multipart_ep_ptr->ctrl_ctx());
+        const auto& mp_req = multipart_ep_ptr->request();
+
+        irods::message_broker client_cmd_skt{irods::zmq_type::RESPONSE, {}, multipart_ep_ptr->ctrl_ctx()};
         client_cmd_skt.connect("inproc://client_comms");
 
         // =-=-=-=-=-=-=-
         //TODO: parameterize
-        irods::message_broker bro(irods::zmq_type::REQUEST);
+        irods::message_broker bro{irods::zmq_type::REQUEST, {.timeout = mp_req.timeout, .retries = mp_req.retries}};
 
         int port = multipart_ep_ptr->port();
         std::stringstream conn_sstr;
         conn_sstr << "tcp://localhost:";
         conn_sstr << port;
         bro.connect(conn_sstr.str());
-
-        const auto& mp_req = multipart_ep_ptr->request();
 
         switch (mp_req.operation) {
             case irods::PUT: {
@@ -142,12 +142,14 @@ void multipart_executor_client(
         transport_context.operation = mp_req.operation;
         transport_context.parts = multipart_ep_ptr->response().parts;
         transport_context.port_list = multipart_ep_ptr->response().port_list;
+        transport_context.timeout = multipart_ep_ptr->request().timeout;
+        transport_context.retries = multipart_ep_ptr->request().retries;
 
         auto xport_ep_ptr = irods::create_command_object(multipart_ep_ptr->request().transport_mechanism, irods::API_EP_CLIENT);
         xport_ep_ptr->initialize_from_context(convert_to_bytes(transport_context));
 
         zmq::context_t xport_zmq_ctx(1);
-        irods::message_broker xport_cmd_skt(irods::zmq_type::REQUEST, &xport_zmq_ctx);
+        irods::message_broker xport_cmd_skt{irods::zmq_type::REQUEST, {}, &xport_zmq_ctx};
         xport_cmd_skt.bind("inproc://client_comms");
 
         irods::api_v5_to_v5_call_endpoint(
@@ -663,9 +665,11 @@ void multipart_executor_server(
     try {
         rsComm_t* comm = multipart_ep_ptr->comm<rsComm_t*>();
 
+        const auto& mp_req = multipart_ep_ptr->request();
+
         // =-=-=-=-=-=-=-
         //TODO: parameterize
-        irods::message_broker bro(irods::zmq_type::RESPONSE);
+        irods::message_broker bro{irods::zmq_type::RESPONSE, {.timeout = mp_req.timeout, .retries = mp_req.retries}};
 
         const int start_port = irods::get_server_property<const int>(
                                    irods::CFG_SERVER_PORT_RANGE_START_KW);
@@ -673,8 +677,6 @@ void multipart_executor_server(
                                   irods::CFG_SERVER_PORT_RANGE_END_KW);
         const int port = bro.bind_to_port_in_range(start_port, end_port);
         multipart_ep_ptr->port(port);
-
-        const auto& mp_req = multipart_ep_ptr->request();
 
         const size_t block_size = 4 * 1024 * 1024;
 
@@ -750,6 +752,8 @@ void multipart_executor_server(
         transport_context.operation = multipart_ep_ptr->request().operation;
         //TODO: remove parts from server_transport_plugin_context when multipart has actually been separated from unipart
         transport_context.parts = multipart_ep_ptr->response().parts;
+        transport_context.timeout = multipart_ep_ptr->request().timeout;
+        transport_context.retries = multipart_ep_ptr->request().retries;
 
         // =-=-=-=-=-=-=-
         // load and start server-side transport plugin
@@ -757,7 +761,7 @@ void multipart_executor_server(
         xport_ep_ptr->initialize_from_context(irods::convert_to_bytes(transport_context));
 
         zmq::context_t xport_zmq_ctx(1);
-        irods::message_broker cmd_skt(irods::zmq_type::REQUEST, &xport_zmq_ctx);
+        irods::message_broker cmd_skt(irods::zmq_type::REQUEST, {}, &xport_zmq_ctx);
         cmd_skt.bind("inproc://server_comms");
 
         irods::api_v5_to_v5_call_endpoint(
@@ -843,6 +847,8 @@ const std::tuple<std::string, po::options_description, po::positional_options_de
                             ("recursive", "Use this option to put a directory and all of its contents in iRODS, preserving the directory structure")
                             ("parts", po::value<int>(), "Number of parts to split the file into")
                             ("threads", po::value<int>(), "Number of threads to use")
+                            ("timeout", po::value<int>(), "Timeout for the connection (in milliseconds)")
+                            ("retries", po::value<int>(), "Number of times to retry connection before aborting in case of EAGAIN")
                             ;
                         return desc;
                     }(),
@@ -865,6 +871,8 @@ const std::tuple<std::string, po::options_description, po::positional_options_de
                             ("recursive", "Use this option to retrieve a collection and all of its contents from iRODS, preserving the directory structure")
                             ("parts", po::value<int>(), "Number of parts to split the file into")
                             ("threads", po::value<int>(), "Number of threads to use")
+                            ("timeout", po::value<int>(), "Timeout for the connection (in milliseconds)")
+                            ("retries", po::value<int>(), "Number of times to retry connection before aborting in case of EAGAIN")
                             ;
                         return desc;
                     }(),
@@ -901,6 +909,8 @@ void irods::multipart_api_client_endpoint::initialize_from_command(
         request().resource = vm.count("resource") ? vm["resource"].as<std::string>() : "demoResc";
         request().requested_number_of_parts = vm.count("parts") ? vm["parts"].as<int>() : 2;
         request().requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
+        request().timeout = vm.count("timeout") ? vm["timeout"].as<int>() : -1;
+        request().retries = vm.count("retries") ? vm["retries"].as<int>() : 1000;
     } else if (_subcommand == GET_KW) {
         request().operation = irods::GET;
         request().transport_mechanism = "api_plugin_unipart";
@@ -910,6 +920,8 @@ void irods::multipart_api_client_endpoint::initialize_from_command(
         request().resource = vm.count("resource") ? vm["resource"].as<std::string>() : "demoResc";
         request().requested_number_of_parts = vm.count("parts") ? vm["parts"].as<int>() : 2;
         request().requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
+        request().timeout = vm.count("timeout") ? vm["timeout"].as<int>() : -1;
+        request().retries = vm.count("retries") ? vm["retries"].as<int>() : 1000;
     } else {
         THROW(SYS_NOT_SUPPORTED, boost::format("Unsupported command: %s") % _subcommand);
     }
