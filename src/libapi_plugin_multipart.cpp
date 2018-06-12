@@ -148,14 +148,14 @@ void multipart_executor_client(
         auto xport_ep_ptr = irods::create_command_object(multipart_ep_ptr->request().transport_mechanism, irods::API_EP_CLIENT);
         xport_ep_ptr->initialize_from_context(convert_to_bytes(transport_context));
 
-        zmq::context_t xport_zmq_ctx(1);
-        irods::message_broker xport_cmd_skt{irods::zmq_type::REQUEST, {}, &xport_zmq_ctx};
+        auto xport_zmq_ctx = std::make_shared<zmq::context_t>(1);
+        irods::message_broker xport_cmd_skt{irods::zmq_type::REQUEST, {}, xport_zmq_ctx};
         xport_cmd_skt.bind("inproc://client_comms");
 
         irods::api_v5_to_v5_call_endpoint(
             comm,
             xport_ep_ptr,
-            &xport_zmq_ctx);
+            xport_zmq_ctx);
 
         // command and control message loop
         while(true) {
@@ -760,14 +760,14 @@ void multipart_executor_server(
         auto xport_ep_ptr = irods::create_command_object(multipart_ep_ptr->request().transport_mechanism, irods::API_EP_SERVER);
         xport_ep_ptr->initialize_from_context(irods::convert_to_bytes(transport_context));
 
-        zmq::context_t xport_zmq_ctx(1);
-        irods::message_broker cmd_skt(irods::zmq_type::REQUEST, {}, &xport_zmq_ctx);
+        auto xport_zmq_ctx = std::make_shared<zmq::context_t>(1);
+        irods::message_broker cmd_skt(irods::zmq_type::REQUEST, {}, xport_zmq_ctx);
         cmd_skt.bind("inproc://server_comms");
 
         irods::api_v5_to_v5_call_endpoint(
             comm,
             xport_ep_ptr,
-            &xport_zmq_ctx);
+            xport_zmq_ctx);
 
         // =-=-=-=-=-=-=-
         // wait for port list

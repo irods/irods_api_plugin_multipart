@@ -87,7 +87,7 @@ void transfer_executor_client(
     const int                                     _port,
     const std::string&                            _host_name,
     const std::string                             _cmd_conn_str,
-    zmq::context_t*                               _zmq_ctx,
+    std::shared_ptr<zmq::context_t>               _zmq_ctx,
     const std::vector<irods::part_request>&       _part_queue,
     const irods::client_transport_plugin_context& _context) {
 
@@ -239,7 +239,7 @@ void unipart_executor_client(
             }
         }
 
-        zmq::context_t xport_zmq_ctx(context.parts.size()+1);
+        auto xport_zmq_ctx = std::make_shared<zmq::context_t>(context.parts.size()+1);
 
         // TODO: create vector of message brokers from local context
         std::vector<std::unique_ptr<irods::message_broker>> xport_skts{};
@@ -249,7 +249,7 @@ void unipart_executor_client(
         const irods::broker_settings settings{};
         for(size_t tid = 0; tid <context.port_list.size(); ++tid) {
             xport_skts.emplace_back(std::make_unique<irods::message_broker>(
-                        irods::zmq_type::REQUEST, settings, &xport_zmq_ctx));
+                        irods::zmq_type::REQUEST, settings, xport_zmq_ctx));
             std::stringstream conn_sstr;
             conn_sstr << "inproc://xport_client_to_executors_";
             conn_sstr << tid;
@@ -262,7 +262,7 @@ void unipart_executor_client(
                 context.port_list[tid].port,
                 context.port_list[tid].host_name,
                 conn_sstr.str(),
-                &xport_zmq_ctx,
+                xport_zmq_ctx,
                 part_queues[tid],
                 context);
         } // for thread id
@@ -1038,6 +1038,7 @@ void unipart_executor_server_to_server(
         else {
             // TODO: should not get here
         }
+        //rcDisconnect(server_host->conn);
     }
     catch(const boost::bad_any_cast& _e) {
         // cannot update catalog, no mp_resp
