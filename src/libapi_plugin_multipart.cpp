@@ -141,6 +141,7 @@ void multipart_executor_client(
         transport_context.local_filepath = multipart_ep_ptr->context().local_filepath;
         transport_context.operation = mp_req.operation;
         transport_context.parts = multipart_ep_ptr->response().parts;
+        transport_context.block_size = multipart_ep_ptr->response().block_size;
         transport_context.port_list = multipart_ep_ptr->response().port_list;
         transport_context.timeout = multipart_ep_ptr->request().timeout;
         transport_context.retries = multipart_ep_ptr->request().retries;
@@ -295,6 +296,14 @@ static bool query_for_restart(
     return ret_val;
 
 } // query_for_restart
+
+size_t resolve_block_size(
+        const size_t _requested_block_size,
+        const off_t _file_size) {
+    // TODO: invoke policy here for block_size
+    return _requested_block_size;
+
+} // resolve_block_size
 
 
 size_t resolve_number_of_parts(
@@ -678,8 +687,6 @@ void multipart_executor_server(
         const int port = bro.bind_to_port_in_range(start_port, end_port);
         multipart_ep_ptr->port(port);
 
-        const size_t block_size = 4 * 1024 * 1024;
-
         switch (mp_req.operation) {
             case irods::PUT: {
                 // wait for file size from client
@@ -696,7 +703,8 @@ void multipart_executor_server(
 
                 if(!restart) {
                     rodsLog(LOG_NOTICE, "Starting fresh...");
-                    const size_t num_parts = resolve_number_of_parts(mp_req.requested_number_of_parts, file_size, block_size);
+                    multipart_ep_ptr->response().block_size = resolve_block_size(mp_req.requested_block_size, file_size);
+                    const size_t num_parts = resolve_number_of_parts(mp_req.requested_number_of_parts, file_size, multipart_ep_ptr->response().block_size);
                     multipart_ep_ptr->response().parts.resize(num_parts);
 
                     resolve_part_object_paths(mp_coll, multipart_ep_ptr->response());
@@ -707,7 +715,7 @@ void multipart_executor_server(
                     register_part_objects(comm, multipart_ep_ptr->response());
                 }
 
-                resolve_part_sizes(file_size, block_size, multipart_ep_ptr->response().parts);
+                resolve_part_sizes(file_size, multipart_ep_ptr->response().block_size, multipart_ep_ptr->response().parts);
                 resolve_part_hostnames(multipart_ep_ptr->response());
 
                 break;
@@ -725,7 +733,8 @@ void multipart_executor_server(
                 }
                 const off_t file_size = stbuf->objSize;
 
-                const size_t num_parts = resolve_number_of_parts(mp_req.requested_number_of_parts, file_size, block_size);
+                multipart_ep_ptr->response().block_size = resolve_block_size(mp_req.requested_block_size, file_size);
+                const size_t num_parts = resolve_number_of_parts(mp_req.requested_number_of_parts, file_size, multipart_ep_ptr->response().block_size);
                 multipart_ep_ptr->response().parts.resize(num_parts);
 
                 for (auto& p : multipart_ep_ptr->response().parts) {
@@ -735,7 +744,7 @@ void multipart_executor_server(
                 resolve_part_hierarchies_for_get(comm, true, mp_req.data_object_path, mp_req.resource, multipart_ep_ptr->response());
                 resolve_part_physical_paths(multipart_ep_ptr->response());
 
-                resolve_part_sizes(file_size, block_size, multipart_ep_ptr->response().parts);
+                resolve_part_sizes(file_size, multipart_ep_ptr->response().block_size, multipart_ep_ptr->response().parts);
                 resolve_part_hostnames(multipart_ep_ptr->response());
 
                 const auto rcv_msg = bro.receive();
@@ -754,6 +763,7 @@ void multipart_executor_server(
         transport_context.parts = multipart_ep_ptr->response().parts;
         transport_context.timeout = multipart_ep_ptr->request().timeout;
         transport_context.retries = multipart_ep_ptr->request().retries;
+        transport_context.block_size = multipart_ep_ptr->response().block_size;
 
         // =-=-=-=-=-=-=-
         // load and start server-side transport plugin
@@ -846,6 +856,7 @@ const std::tuple<std::string, po::options_description, po::positional_options_de
                             ("resource", po::value<std::string>(), "The resource in which to put the data object")
                             ("recursive", "Use this option to put a directory and all of its contents in iRODS, preserving the directory structure")
                             ("parts", po::value<int>(), "Number of parts to split the file into")
+                            ("block_size", po::value<int>(), "Number of bytes to transfer in a single block")
                             ("threads", po::value<int>(), "Number of threads to use")
                             ("timeout", po::value<int>(), "Timeout for the connection (in milliseconds)")
                             ("retries", po::value<int>(), "Number of times to retry connection before aborting in case of EAGAIN")
@@ -870,6 +881,7 @@ const std::tuple<std::string, po::options_description, po::positional_options_de
                             ("resource", po::value<std::string>(), "The resource from which to get the data object")
                             ("recursive", "Use this option to retrieve a collection and all of its contents from iRODS, preserving the directory structure")
                             ("parts", po::value<int>(), "Number of parts to split the file into")
+                            ("block_size", po::value<int>(), "Number of bytes to transfer in a single block")
                             ("threads", po::value<int>(), "Number of threads to use")
                             ("timeout", po::value<int>(), "Timeout for the connection (in milliseconds)")
                             ("retries", po::value<int>(), "Number of times to retry connection before aborting in case of EAGAIN")
@@ -908,6 +920,7 @@ void irods::multipart_api_client_endpoint::initialize_from_command(
         //TODO: make this actually use the environment
         request().resource = vm.count("resource") ? vm["resource"].as<std::string>() : "demoResc";
         request().requested_number_of_parts = vm.count("parts") ? vm["parts"].as<int>() : 2;
+        request().requested_block_size = vm.count("block_size") ? vm["block_size"].as<int>() : 4 * 1024 * 1024;
         request().requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
         request().timeout = vm.count("timeout") ? vm["timeout"].as<int>() : -1;
         request().retries = vm.count("retries") ? vm["retries"].as<int>() : 1000;
@@ -919,6 +932,7 @@ void irods::multipart_api_client_endpoint::initialize_from_command(
         //TODO: make this actually use the environment
         request().resource = vm.count("resource") ? vm["resource"].as<std::string>() : "demoResc";
         request().requested_number_of_parts = vm.count("parts") ? vm["parts"].as<int>() : 2;
+        request().requested_block_size = vm.count("block_size") ? vm["block_size"].as<int>() : 4 * 1024 * 1024;
         request().requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
         request().timeout = vm.count("timeout") ? vm["timeout"].as<int>() : -1;
         request().retries = vm.count("retries") ? vm["retries"].as<int>() : 1000;

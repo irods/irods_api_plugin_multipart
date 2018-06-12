@@ -49,6 +49,7 @@
         "fields": [
             {"name": "timeout", "type": "int"},
             {"name": "retries", "type": "int"},
+            {"name": "block_size", "type": "long"},
             {"name": "local_filepath", "type": "string"},
             {"name": "operation", "type": "multipart_operation_t"},
             {
@@ -69,6 +70,7 @@
         "fields": [
             {"name": "timeout", "type": "int"},
             {"name": "retries", "type": "int"},
+            {"name": "block_size", "type": "long"},
             {"name": "number_of_threads", "type": "int"},
             {"name": "data_object_path", "type": "string"},
             {"name": "host_name", "type": "string"},
@@ -88,6 +90,7 @@
             {"name": "data_object_path", "type": "string"},
             {"name": "resource", "type": "string"},
             {"name": "requested_number_of_parts", "type": "int"},
+            {"name": "requested_block_size", "type": "long"},
             {"name": "requested_number_of_threads", "type": "int"},
             {"name": "timeout", "type": "int"},
             {"name": "retries", "type": "int"},
@@ -127,6 +130,7 @@
         "name": "multipart_response",
         "type": "record",
         "fields": [
+            {"name": "block_size", "type": "long"},
             {
                 "name": "port_list", "type": {
                     "type": "array", "items": "socket_address"

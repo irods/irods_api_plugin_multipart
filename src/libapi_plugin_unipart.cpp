@@ -83,7 +83,7 @@ void print_server_context(
 }
 
 void transfer_executor_client(
-    std::shared_ptr<irods::local_multipart_file> _mp_file,
+    std::shared_ptr<irods::local_multipart_file>  _mp_file,
     const int                                     _port,
     const std::string&                            _host_name,
     const std::string                             _cmd_conn_str,
@@ -215,7 +215,7 @@ void unipart_executor_client(
                 0,
                 file_size,
                 context.parts.size(),
-                4 * 1024 * 1024,
+                context.block_size,
                 context.operation);
 
         // TODO: deal parts out in a serial fashion to cluster sequential reads in one thread
@@ -805,10 +805,9 @@ void transfer_executor_server(
             }
 
             ssize_t bytes_remaining = uni_req.part_size - uni_req.bytes_already_transferred;
-            const size_t block_size = 4 * 1024 * 1024;
             // start writing things down
             do {
-                bytes_remaining = impl->server_transfer(_comm, bro, uni_req, bytes_remaining, block_size);
+                bytes_remaining = impl->server_transfer(_comm, bro, uni_req, bytes_remaining, _context.block_size);
             } while (bytes_remaining > 0);
 
         } // while
