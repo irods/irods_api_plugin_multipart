@@ -1,6 +1,14 @@
 [
     {
         "type": "record",
+        "name": "error_t",
+        "fields": [
+            {"name": "code", "type": "long"},
+            {"name": "message", "type": "string"}
+        ]
+    },
+    {
+        "type": "record",
         "name": "socket_address",
         "fields": [
             {"name": "host_name", "type": "string"},
@@ -95,6 +103,7 @@
             {"name": "timeout", "type": "int"},
             {"name": "retries", "type": "int"},
             {"name": "transport_mechanism", "type": { "type": "string"} },
+            {"name": "force", "type": "boolean"},
             {
                 "name": "access_control_list",
                 "type": {
@@ -140,7 +149,9 @@
                 "name": "parts", "type": {
                     "type": "array", "items": "part_request"
                 }
-            }
+            },
+            {"name": "error", "type": "error_t"}
         ]
+        
     }
 ]

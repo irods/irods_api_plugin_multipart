@@ -37,6 +37,7 @@
 #include <sstream>
 #include <string>
 #include <iostream>
+#include <numeric>
 
 extern irods::resource_manager resc_mgr;
 
@@ -107,10 +108,13 @@ void multipart_executor_client(
                 bfs::path p(multipart_ep_ptr->context().local_filepath);
 
                 if(!bfs::exists(p)) {
-#if 0 // TODO - FIXME
-                    bro->send(QUIT_MSG);
-                    const auto = bro->receive();
-#endif
+                    bro.send(boost::lexical_cast<std::string>(std::numeric_limits<off_t>::max()));
+                    bro.receive();
+
+                    client_cmd_skt.receive();
+                    client_cmd_skt.send(ACK_MSG);
+
+                    std::cerr << "File '" << multipart_ep_ptr->context().local_filepath << "' not found, check path and try again" << std::endl;
                     multipart_ep_ptr->done(true);
                     return;
                 }
@@ -125,7 +129,15 @@ void multipart_executor_client(
             }
             case irods::GET: {
                 bfs::path p(multipart_ep_ptr->context().local_filepath);
-                if(bfs::exists(p)) {
+                if(bfs::exists(p) && !multipart_ep_ptr->request().force) {
+
+                    bro.send(QUIT_MSG);
+                    bro.receive();
+
+                    client_cmd_skt.receive();
+                    client_cmd_skt.send(ACK_MSG);
+
+                    std::cerr << "File " << multipart_ep_ptr->context().local_filepath << " already exists, use --force to overwrite." << std::endl;
                     multipart_ep_ptr->done(true);
                     return;
                 }
@@ -136,6 +148,14 @@ void multipart_executor_client(
         }
 
         multipart_ep_ptr->response() = bro.receive<irods::multipart_response>();
+        if (multipart_ep_ptr->response().error.code) {
+            client_cmd_skt.receive();
+            client_cmd_skt.send(ACK_MSG);
+
+            std::cerr << multipart_ep_ptr->response().error.message << std::endl;
+            multipart_ep_ptr->done(true);
+            return;
+        }
 
         irods::client_transport_plugin_context transport_context;
         transport_context.local_filepath = multipart_ep_ptr->context().local_filepath;
@@ -692,6 +712,26 @@ void multipart_executor_server(
                 // wait for file size from client
                 const auto file_size_string = bro.receive<std::string>();
                 const off_t file_size = boost::lexical_cast<off_t>(file_size_string);
+                if (std::numeric_limits<off_t>::max() == file_size) {
+                    rodsLog(LOG_NOTICE, "multipart put operation cancelled by client");
+                    bro.send(ACK_MSG);
+                    multipart_ep_ptr->done(true);
+                    return;
+                }
+
+                dataObjInp_t o_inp{};
+                rstrcpy(o_inp.objPath, mp_req.data_object_path.c_str(), sizeof(o_inp.objPath));
+                addKeyVal( &o_inp.condInput, SEL_OBJ_TYPE_KW, "dataObj" );
+ 
+                rodsObjStat_t* stbuf{};
+                int status = dataObjStat( comm, &o_inp, &stbuf );
+                if ( status != CAT_NO_ROWS_FOUND && !multipart_ep_ptr->request().force) {
+                    multipart_ep_ptr->response().error.code = status;
+                    multipart_ep_ptr->response().error.message = (boost::format{"Data object at %s already exists, use --force to overwrite."} % mp_req.data_object_path.c_str()).str();
+                    bro.send(multipart_ep_ptr->response());
+                    multipart_ep_ptr->done(true);
+                    THROW(status, "failed in dataObjStat");
+                }
 
                 const auto mp_coll = make_multipart_collection_path(
                                         mp_req.data_object_path);
@@ -722,6 +762,15 @@ void multipart_executor_server(
             }
             case irods::GET: {
                 //send file size to client
+                const auto rcv_msg = bro.receive();
+                if (QUIT_MSG == rcv_msg) {
+                    rodsLog(LOG_NOTICE, "multipart get operation cancelled by client");
+                    bro.send(ACK_MSG);
+                    multipart_ep_ptr->done(true);
+                    return;
+                }
+                    
+
                 dataObjInp_t o_inp{};
                 rstrcpy(o_inp.objPath, mp_req.data_object_path.c_str(), sizeof(o_inp.objPath));
                 addKeyVal( &o_inp.condInput, SEL_OBJ_TYPE_KW, "dataObj" );
@@ -729,6 +778,10 @@ void multipart_executor_server(
                 rodsObjStat_t* stbuf{};
                 int status = dataObjStat( comm, &o_inp, &stbuf );
                 if ( status < 0 ) {
+                    multipart_ep_ptr->response().error.code = status;
+                    multipart_ep_ptr->response().error.message = "Data object stat failed, file not accessible.";
+                    bro.send(multipart_ep_ptr->response());
+                    multipart_ep_ptr->done(true);
                     THROW(status, "failed in dataObjStat");
                 }
                 const off_t file_size = stbuf->objSize;
@@ -747,7 +800,6 @@ void multipart_executor_server(
                 resolve_part_sizes(file_size, multipart_ep_ptr->response().block_size, multipart_ep_ptr->response().parts);
                 resolve_part_hostnames(multipart_ep_ptr->response());
 
-                const auto rcv_msg = bro.receive();
                 break;
             }
         }
@@ -860,6 +912,7 @@ const std::tuple<std::string, po::options_description, po::positional_options_de
                             ("threads", po::value<int>(), "Number of threads to use")
                             ("timeout", po::value<int>(), "Timeout for the connection (in milliseconds)")
                             ("retries", po::value<int>(), "Number of times to retry connection before aborting in case of EAGAIN")
+                            ("force", "Overwrite existing data object at the target path")
                             ;
                         return desc;
                     }(),
@@ -885,6 +938,7 @@ const std::tuple<std::string, po::options_description, po::positional_options_de
                             ("threads", po::value<int>(), "Number of threads to use")
                             ("timeout", po::value<int>(), "Timeout for the connection (in milliseconds)")
                             ("retries", po::value<int>(), "Number of times to retry connection before aborting in case of EAGAIN")
+                            ("force", "Overwrite existing file at the target path")
                             ;
                         return desc;
                     }(),
@@ -924,6 +978,7 @@ void irods::multipart_api_client_endpoint::initialize_from_command(
         request().requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
         request().timeout = vm.count("timeout") ? vm["timeout"].as<int>() : -1;
         request().retries = vm.count("retries") ? vm["retries"].as<int>() : 1000;
+        request().force = vm.count("force") ? true : false;
     } else if (_subcommand == GET_KW) {
         request().operation = irods::GET;
         request().transport_mechanism = "api_plugin_unipart";
@@ -936,6 +991,7 @@ void irods::multipart_api_client_endpoint::initialize_from_command(
         request().requested_number_of_threads = vm.count("threads") ? vm["threads"].as<int>() : 2;
         request().timeout = vm.count("timeout") ? vm["timeout"].as<int>() : -1;
         request().retries = vm.count("retries") ? vm["retries"].as<int>() : 1000;
+        request().force = vm.count("force") ? true : false;
     } else {
         THROW(SYS_NOT_SUPPORTED, boost::format("Unsupported command: %s") % _subcommand);
     }
